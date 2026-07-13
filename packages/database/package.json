@@ -1,0 +1,19 @@
+{
+  "name": "@engineering-os/database",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@engineering-os/logger": "workspace:*",
+    "@engineering-os/security": "workspace:*",
+    "better-sqlite3": "^12.2.0"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests --ext .ts --no-error-on-unmatched-pattern"
+  }
+}

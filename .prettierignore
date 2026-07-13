@@ -1,0 +1,6 @@
+apps/desktop/dist
+apps/desktop/src-tauri/gen
+apps/desktop/src-tauri/target
+node_modules
+playwright-report
+test-results

@@ -1,0 +1,14 @@
+{
+  "name": "@engineering-os/shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests --ext .ts --no-error-on-unmatched-pattern"
+  }
+}

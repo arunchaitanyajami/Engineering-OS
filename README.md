@@ -50,9 +50,10 @@ docs/
 1. Install Node.js 20+ and pnpm 10+.
 2. Run `pnpm install`.
 3. Run `pnpm check`.
-4. Start the Tauri desktop shell with `pnpm dev`.
-5. Start the browser-only shell with `pnpm dev:web` when you only need the React layer.
-6. Inspect CLI help with `pnpm dev:cli`.
+4. Run `pnpm check:full` when you also want the security audit gate.
+5. Start the Tauri desktop shell with `pnpm dev`.
+6. Start the browser-only shell with `pnpm dev:web` when you only need the React layer.
+7. Inspect CLI help with `pnpm dev:cli`.
 
 See [local setup](docs/development/setup.md) for local setup details.
 
@@ -65,7 +66,8 @@ See [local setup](docs/development/setup.md) for local setup details.
 - `pnpm typecheck`: run strict TypeScript checks
 - `pnpm test`: run unit and integration tests
 - `pnpm test:e2e`: run Playwright smoke tests
-- `pnpm check`: run the mandatory local quality gates
+- `pnpm check`: run the deterministic local quality gates
+- `pnpm check:full`: run `pnpm check` plus the security audit gate
 
 ## Docs
 

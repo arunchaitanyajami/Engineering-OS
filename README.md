@@ -54,7 +54,7 @@ docs/
 5. Start the browser-only shell with `pnpm dev:web` when you only need the React layer.
 6. Inspect CLI help with `pnpm dev:cli`.
 
-See [setup.md](file:///Users/bonideveloper/Documents/Engineering-OS/docs/development/setup.md) for local setup details.
+See [local setup](docs/development/setup.md) for local setup details.
 
 ## Common Commands
 
@@ -69,12 +69,12 @@ See [setup.md](file:///Users/bonideveloper/Documents/Engineering-OS/docs/develop
 
 ## Docs
 
-- [overview.md](file:///Users/bonideveloper/Documents/Engineering-OS/docs/architecture/overview.md)
-- [system-context.md](file:///Users/bonideveloper/Documents/Engineering-OS/docs/architecture/system-context.md)
-- [container-architecture.md](file:///Users/bonideveloper/Documents/Engineering-OS/docs/architecture/container-architecture.md)
-- [dependency-rules.md](file:///Users/bonideveloper/Documents/Engineering-OS/docs/architecture/dependency-rules.md)
-- [security-model.md](file:///Users/bonideveloper/Documents/Engineering-OS/docs/security/security-model.md)
-- [milestones.md](file:///Users/bonideveloper/Documents/Engineering-OS/docs/roadmap/milestones.md)
+- [Architecture overview](docs/architecture/overview.md)
+- [System context](docs/architecture/system-context.md)
+- [Container architecture](docs/architecture/container-architecture.md)
+- [Dependency rules](docs/architecture/dependency-rules.md)
+- [Security model](docs/security/security-model.md)
+- [Milestones](docs/roadmap/milestones.md)
 
 ## Current MVP Target
 

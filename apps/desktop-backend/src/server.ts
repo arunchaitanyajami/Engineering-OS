@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import {
   createServer,
@@ -10,6 +11,7 @@ import type { Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { semanticVersionSchema } from "@engineering-os/contracts";
 import {
   createLogger,
   type LogEntry,
@@ -17,7 +19,8 @@ import {
 } from "@engineering-os/logger";
 import {
   PluginRegistryError,
-  PluginRegistryService
+  PluginRegistryService,
+  SqlitePluginRegistryRepository
 } from "@engineering-os/plugin-registry";
 import {
   ApplicationDatabase,
@@ -28,6 +31,12 @@ import type {
   LocalServicesStatus,
   PersistedLogEntry
 } from "@engineering-os/platform";
+import { z } from "zod";
+
+const require = createRequire(import.meta.url);
+const desktopPackageMetadata = require("../../desktop/package.json") as {
+  readonly version?: unknown;
+};
 
 const CONFIG_FILE_NAME = "application-config.json";
 const DATABASE_FILE_NAME = "engineering-os.sqlite";
@@ -41,6 +50,7 @@ const MAX_JSON_PAYLOAD_BYTES = 256 * 1024;
 const MAX_PLUGIN_PACKAGE_PATH_BYTES = 8 * 1024;
 const SHUTDOWN_TIMEOUT_MS = 1_000;
 const READY_MESSAGE_PREFIX = "ENGINEERING_OS_BACKEND_READY ";
+const PLUGINS_DIRECTORY_NAME = "plugins";
 const ALLOWED_TAURI_ORIGINS = new Set([
   "tauri://localhost",
   "http://tauri.localhost",
@@ -50,6 +60,12 @@ const ALLOWED_TAURI_ORIGINS = new Set([
 interface JsonResponseOptions {
   readonly statusCode?: number;
 }
+
+const registerLocalPluginRequestSchema = z
+  .object({
+    packagePath: z.string().trim().min(1).max(MAX_PLUGIN_PACKAGE_PATH_BYTES)
+  })
+  .strict();
 
 export interface BackendContext {
   readonly appDataDirectory: string;
@@ -163,7 +179,10 @@ export const getAllowedOrigin = (): string | null => {
 };
 
 export const getEngineeringOsVersion = (): string =>
-  process.env.EOS_APPLICATION_VERSION?.trim() || "0.1.0";
+  semanticVersionSchema.parse(
+    process.env.EOS_TEST_APPLICATION_VERSION?.trim() ??
+      desktopPackageMetadata.version
+  );
 
 const ensureDirectory = async (path: string) => {
   await mkdir(path, { recursive: true });
@@ -437,6 +456,28 @@ const readJsonBody = async <T>(
   }
 };
 
+const readValidatedJsonBody = async <T>(
+  request: IncomingMessage,
+  maxBytes: number,
+  schema: z.ZodType<T>,
+  invalidCode: string,
+  invalidMessage: string
+): Promise<T> => {
+  const parsedBody = await readJsonBody<unknown>(request, maxBytes);
+
+  try {
+    return schema.parse(parsedBody);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      throw new BackendPublicError(invalidCode, invalidMessage, 400, {
+        cause: error
+      });
+    }
+
+    throw error;
+  }
+};
+
 const resolveAllowedOrigin = (
   request: Pick<IncomingMessage, "headers">,
   context: Pick<BackendContext, "allowedOrigin">
@@ -616,10 +657,12 @@ export const createBackendContext = async (
   const configFilePath = join(appDataDirectory, CONFIG_FILE_NAME);
   const databaseFilePath = join(appDataDirectory, DATABASE_FILE_NAME);
   const logFilePath = join(appDataDirectory, LOG_DIRECTORY_NAME, LOG_FILE_NAME);
+  const pluginsDirectoryPath = join(appDataDirectory, PLUGINS_DIRECTORY_NAME);
   const fileLogTransport = new FileLogTransport(logFilePath);
 
   await ensureDirectory(appDataDirectory);
   await ensureDirectory(join(appDataDirectory, LOG_DIRECTORY_NAME));
+  await ensureDirectory(pluginsDirectoryPath);
 
   const logger = createLogger({
     component: "desktop-backend",
@@ -627,9 +670,10 @@ export const createBackendContext = async (
   });
   const database = new ApplicationDatabase(databaseFilePath, logger);
   const pluginRegistry = new PluginRegistryService({
-    database,
+    repository: new SqlitePluginRegistryRepository(database),
     logger,
-    engineeringOsVersion: getEngineeringOsVersion()
+    engineeringOsVersion: getEngineeringOsVersion(),
+    installationsRootPath: pluginsDirectoryPath
   });
   database.runMigrations();
   database.setMetadata("database_status", "ready");
@@ -738,9 +782,13 @@ export const createDesktopBackendHandler =
       }
 
       if (request.method === "POST" && request.url === "/plugins/register-local") {
-        const { packagePath } = await readJsonBody<{
-          readonly packagePath: string;
-        }>(request, MAX_PLUGIN_PACKAGE_PATH_BYTES);
+        const { packagePath } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          registerLocalPluginRequestSchema,
+          "PLUGIN_REGISTER_REQUEST_INVALID",
+          "Plugin registration request is invalid."
+        );
 
         validatePluginPackagePath(packagePath);
         writeJson(response, {

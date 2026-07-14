@@ -165,9 +165,6 @@ importers:
 
   packages/database:
     dependencies:
-      '@engineering-os/contracts':
-        specifier: workspace:*
-        version: link:../contracts
       '@engineering-os/logger':
         specifier: workspace:*
         version: link:../logger

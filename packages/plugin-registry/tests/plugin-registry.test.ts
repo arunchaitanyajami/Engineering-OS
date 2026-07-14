@@ -1,4 +1,12 @@
-import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdtemp,
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  writeFile
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,6 +16,7 @@ import { ApplicationDatabase } from "@engineering-os/database";
 import { createLogger } from "@engineering-os/logger";
 import {
   PluginRegistryService,
+  SqlitePluginRegistryRepository,
   localPluginManifestFileNames
 } from "@engineering-os/plugin-registry";
 
@@ -82,26 +91,44 @@ describe("PluginRegistryService", () => {
     const database = new ApplicationDatabase(":memory:");
     database.runMigrations();
     databases.push(database);
+    const installationsRootPath = join(fixturesDirectory, "managed-plugins");
 
     const registry = new PluginRegistryService({
-      database,
+      repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "plugin-registry-test" }),
-      engineeringOsVersion: "0.1.0"
+      engineeringOsVersion: "0.1.0",
+      installationsRootPath
     });
     const packageDirectory = await createLocalPluginPackage(fixturesDirectory);
-    const resolvedPackageDirectory = await realpath(packageDirectory);
 
     const registeredPlugin =
       await registry.registerLocalPluginPackage(packageDirectory);
 
     expect(registeredPlugin).toMatchObject({
       pluginId: "com.engineering-os.filesystem",
-      name: "Filesystem Plugin",
-      version: "0.1.0",
-      installPath: resolvedPackageDirectory,
+      manifest: expect.objectContaining({
+        name: "Filesystem Plugin",
+        version: "0.1.0"
+      }),
+      installation: expect.objectContaining({
+        mode: "managed",
+        source: {
+          type: "local-directory",
+          path: await realpath(packageDirectory)
+        }
+      }),
       state: "installed",
       enabled: false
     });
+    await expect(
+      readFile(
+        join(
+          registeredPlugin.installation.rootPath,
+          "engineering-os.plugin.json"
+        ),
+        "utf8"
+      )
+    ).resolves.toContain('"schemaVersion": "1"');
     expect(registry.listInstalledPlugins()).toHaveLength(1);
   });
 
@@ -112,11 +139,13 @@ describe("PluginRegistryService", () => {
     const database = new ApplicationDatabase(":memory:");
     database.runMigrations();
     databases.push(database);
+    const installationsRootPath = join(fixturesDirectory, "managed-plugins");
 
     const registry = new PluginRegistryService({
-      database,
+      repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "plugin-registry-test" }),
-      engineeringOsVersion: "0.1.0"
+      engineeringOsVersion: "0.1.0",
+      installationsRootPath
     });
     const packageDirectory = await createLocalPluginPackage(fixturesDirectory, {
       engineeringOsRange: ">=0.2.0"
@@ -137,11 +166,13 @@ describe("PluginRegistryService", () => {
     const database = new ApplicationDatabase(":memory:");
     database.runMigrations();
     databases.push(database);
+    const installationsRootPath = join(fixturesDirectory, "managed-plugins");
 
     const registry = new PluginRegistryService({
-      database,
+      repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "plugin-registry-test" }),
-      engineeringOsVersion: "0.1.0"
+      engineeringOsVersion: "0.1.0",
+      installationsRootPath
     });
     const packageDirectory = await createLocalPluginPackage(fixturesDirectory, {
       backendEntrypoint: "./dist/backend/missing.js"
@@ -162,11 +193,13 @@ describe("PluginRegistryService", () => {
     const database = new ApplicationDatabase(":memory:");
     database.runMigrations();
     databases.push(database);
+    const installationsRootPath = join(fixturesDirectory, "managed-plugins");
 
     const registry = new PluginRegistryService({
-      database,
+      repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "plugin-registry-test" }),
-      engineeringOsVersion: "0.1.0"
+      engineeringOsVersion: "0.1.0",
+      installationsRootPath
     });
     const firstPackageDirectory = await createLocalPluginPackage(fixturesDirectory, {
       id: "com.engineering-os.github"
@@ -184,5 +217,42 @@ describe("PluginRegistryService", () => {
       code: "PLUGIN_ALREADY_REGISTERED",
       statusCode: 409
     });
+  });
+
+  it("copies managed plugin contents so the source can be removed after registration", async () => {
+    const fixturesDirectory = await mkdtemp(
+      join(tmpdir(), "engineering-os-plugin-registry-")
+    );
+    directories.push(fixturesDirectory);
+
+    const database = new ApplicationDatabase(":memory:");
+    database.runMigrations();
+    databases.push(database);
+    const installationsRootPath = join(fixturesDirectory, "managed-plugins");
+
+    const registry = new PluginRegistryService({
+      repository: new SqlitePluginRegistryRepository(database),
+      logger: createLogger({ component: "plugin-registry-test" }),
+      engineeringOsVersion: "0.1.0",
+      installationsRootPath
+    });
+    const packageDirectory = await createLocalPluginPackage(fixturesDirectory, {
+      id: "com.engineering-os.confluence"
+    });
+
+    const registeredPlugin =
+      await registry.registerLocalPluginPackage(packageDirectory);
+
+    await rm(packageDirectory, { recursive: true, force: true });
+
+    await expect(access(registeredPlugin.installation.rootPath)).resolves.toBe(
+      undefined
+    );
+    await expect(
+      readFile(
+        join(registeredPlugin.installation.rootPath, "dist/backend/index.js"),
+        "utf8"
+      )
+    ).resolves.toContain("export {}");
   });
 });

@@ -1,16 +1,13 @@
 import { createRequire } from "node:module";
 import type * as SqliteModule from "node:sqlite";
 
-import {
-  pluginManifestSchema,
-  type PluginManifest
-} from "@engineering-os/contracts";
 import type { Logger } from "@engineering-os/logger";
 import type { EngineeringSession } from "@engineering-os/platform";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as typeof SqliteModule;
 type DatabaseConnection = InstanceType<typeof DatabaseSync>;
+type SqlParameter = SqliteModule.SQLInputValue;
 
 export interface SqlMigration {
   readonly version: number;
@@ -22,45 +19,6 @@ export interface ApplicationDatabaseHealth {
   readonly ok: boolean;
   readonly migrationVersion: number;
   readonly databasePath: string;
-}
-
-export type InstalledPluginState =
-  | "discovered"
-  | "validated"
-  | "installed"
-  | "disabled"
-  | "failed"
-  | "incompatible"
-  | "removed";
-
-export interface InstalledPluginRecord {
-  readonly id: string;
-  readonly pluginId: string;
-  readonly name: string;
-  readonly version: string;
-  readonly description: string;
-  readonly installPath: string;
-  readonly manifest: PluginManifest;
-  readonly state: InstalledPluginState;
-  readonly enabled: boolean;
-  readonly installedAt: string;
-  readonly updatedAt: string;
-  readonly lastError: string | null;
-}
-
-export interface RegisterInstalledPluginInput {
-  readonly id: string;
-  readonly pluginId: string;
-  readonly name: string;
-  readonly version: string;
-  readonly description: string;
-  readonly installPath: string;
-  readonly manifest: PluginManifest;
-  readonly state: InstalledPluginState;
-  readonly enabled: boolean;
-  readonly installedAt: string;
-  readonly updatedAt: string;
-  readonly lastError?: string | null;
 }
 
 export const applicationMigrations: readonly SqlMigration[] = [
@@ -113,6 +71,79 @@ export const applicationMigrations: readonly SqlMigration[] = [
       CREATE INDEX IF NOT EXISTS idx_installed_plugins_updated_at
         ON installed_plugins(updated_at DESC);
     `
+  },
+  {
+    version: 4,
+    name: "installed_plugins_managed_installation",
+    sql: `
+      ALTER TABLE installed_plugins RENAME TO installed_plugins_legacy;
+
+      CREATE TABLE installed_plugins (
+        id TEXT PRIMARY KEY,
+        plugin_id TEXT NOT NULL UNIQUE,
+        install_root_path TEXT NOT NULL UNIQUE,
+        installation_mode TEXT NOT NULL CHECK (
+          installation_mode IN ('managed', 'development-link')
+        ),
+        source_type TEXT NOT NULL CHECK (
+          source_type IN ('local-directory')
+        ),
+        source_path TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        manifest_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (
+          state IN ('installed', 'incompatible', 'removed')
+        ),
+        enabled INTEGER NOT NULL DEFAULT 0 CHECK (
+          enabled IN (0, 1)
+        ),
+        installed_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_error TEXT
+      );
+
+      INSERT INTO installed_plugins (
+        id,
+        plugin_id,
+        install_root_path,
+        installation_mode,
+        source_type,
+        source_path,
+        content_hash,
+        manifest_json,
+        state,
+        enabled,
+        installed_at,
+        updated_at,
+        last_error
+      )
+      SELECT
+        id,
+        plugin_id,
+        install_path,
+        'development-link',
+        'local-directory',
+        install_path,
+        '',
+        manifest_json,
+        CASE
+          WHEN state IN ('installed', 'incompatible', 'removed') THEN state
+          ELSE 'installed'
+        END,
+        CASE
+          WHEN enabled IN (0, 1) THEN enabled
+          ELSE 0
+        END,
+        installed_at,
+        updated_at,
+        last_error
+      FROM installed_plugins_legacy;
+
+      DROP TABLE installed_plugins_legacy;
+
+      CREATE INDEX IF NOT EXISTS idx_installed_plugins_updated_at
+        ON installed_plugins(updated_at DESC);
+    `
   }
 ];
 
@@ -134,7 +165,7 @@ const readRequiredString = (value: unknown, fieldName: string): string => {
   return value;
 };
 
-const readRequiredBoolean = (value: unknown, fieldName: string): boolean => {
+export const readRequiredBoolean = (value: unknown, fieldName: string): boolean => {
   if (typeof value === "boolean") {
     return value;
   }
@@ -146,53 +177,16 @@ const readRequiredBoolean = (value: unknown, fieldName: string): boolean => {
   throw new Error(`Expected '${fieldName}' to be a boolean.`);
 };
 
-const readOptionalString = (value: unknown, fieldName: string): string | null => {
+export const readOptionalString = (
+  value: unknown,
+  fieldName: string
+): string | null => {
   if (value === null || value === undefined) {
     return null;
   }
 
   return readRequiredString(value, fieldName);
 };
-
-const parseInstalledPluginManifest = (value: unknown): PluginManifest => {
-  const serializedManifest = readRequiredString(value, "manifest_json");
-
-  return pluginManifestSchema.parse(JSON.parse(serializedManifest));
-};
-
-const parseInstalledPluginState = (value: unknown): InstalledPluginState => {
-  const state = readRequiredString(value, "state");
-
-  switch (state) {
-    case "discovered":
-    case "validated":
-    case "installed":
-    case "disabled":
-    case "failed":
-    case "incompatible":
-    case "removed":
-      return state;
-    default:
-      throw new Error(`Unsupported installed plugin state '${state}'.`);
-  }
-};
-
-const mapInstalledPluginRow = (
-  row: Record<string, unknown>
-): InstalledPluginRecord => ({
-  id: readRequiredString(row.id, "id"),
-  pluginId: readRequiredString(row.plugin_id, "plugin_id"),
-  name: readRequiredString(row.name, "name"),
-  version: readRequiredString(row.version, "version"),
-  description: readRequiredString(row.description, "description"),
-  installPath: readRequiredString(row.install_path, "install_path"),
-  manifest: parseInstalledPluginManifest(row.manifest_json),
-  state: parseInstalledPluginState(row.state),
-  enabled: readRequiredBoolean(row.enabled, "enabled"),
-  installedAt: readRequiredString(row.installed_at, "installed_at"),
-  updatedAt: readRequiredString(row.updated_at, "updated_at"),
-  lastError: readOptionalString(row.last_error, "last_error")
-});
 
 const beginTransaction = (database: DatabaseConnection) => {
   database.exec("BEGIN IMMEDIATE");
@@ -330,103 +324,28 @@ export class ApplicationDatabase {
     return session;
   }
 
-  getInstalledPlugin(pluginId: string): InstalledPluginRecord | null {
-    const row = this.connection
-      .prepare(
-        `
-          SELECT
-            id,
-            plugin_id,
-            name,
-            version,
-            description,
-            install_path,
-            manifest_json,
-            state,
-            enabled,
-            installed_at,
-            updated_at,
-            last_error
-          FROM installed_plugins
-          WHERE plugin_id = ?
-        `
-      )
-      .get(pluginId) as Record<string, unknown> | undefined;
-
-    return row ? mapInstalledPluginRow(row) : null;
+  execute(sql: string, parameters: readonly SqlParameter[] = []): void {
+    this.connection.prepare(sql).run(...parameters);
   }
 
-  listInstalledPlugins(): readonly InstalledPluginRecord[] {
-    const rows = this.connection
-      .prepare(
-        `
-          SELECT
-            id,
-            plugin_id,
-            name,
-            version,
-            description,
-            install_path,
-            manifest_json,
-            state,
-            enabled,
-            installed_at,
-            updated_at,
-            last_error
-          FROM installed_plugins
-          ORDER BY updated_at DESC, plugin_id ASC
-        `
-      )
-      .all() as Array<Record<string, unknown>>;
+  queryFirst(
+    sql: string,
+    parameters: readonly SqlParameter[] = []
+  ): Record<string, unknown> | null {
+    const row = this.connection.prepare(sql).get(...parameters) as
+      | Record<string, unknown>
+      | undefined;
 
-    return rows.map(mapInstalledPluginRow);
+    return row ?? null;
   }
 
-  registerInstalledPlugin(
-    input: RegisterInstalledPluginInput
-  ): InstalledPluginRecord {
-    const statement = this.connection.prepare(`
-      INSERT INTO installed_plugins (
-        id,
-        plugin_id,
-        name,
-        version,
-        description,
-        install_path,
-        manifest_json,
-        state,
-        enabled,
-        installed_at,
-        updated_at,
-        last_error
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    statement.run(
-      input.id,
-      input.pluginId,
-      input.name,
-      input.version,
-      input.description,
-      input.installPath,
-      JSON.stringify(input.manifest),
-      input.state,
-      input.enabled ? 1 : 0,
-      input.installedAt,
-      input.updatedAt,
-      input.lastError ?? null
-    );
-
-    const installedPlugin = this.getInstalledPlugin(input.pluginId);
-
-    if (!installedPlugin) {
-      throw new Error(
-        `Installed plugin '${input.pluginId}' could not be read after insert.`
-      );
-    }
-
-    return installedPlugin;
+  queryAll(
+    sql: string,
+    parameters: readonly SqlParameter[] = []
+  ): readonly Record<string, unknown>[] {
+    return this.connection.prepare(sql).all(...parameters) as Array<
+      Record<string, unknown>
+    >;
   }
 
   queryTableNames(): readonly string[] {

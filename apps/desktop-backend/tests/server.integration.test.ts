@@ -109,7 +109,7 @@ describe("desktop backend server", () => {
       database: {
         ok: true,
         status: "ready",
-        migrationVersion: 3,
+        migrationVersion: 4,
         databasePath: runtime.context.databaseFilePath
       },
       configFilePath: runtime.context.configFilePath,
@@ -398,7 +398,7 @@ describe("desktop backend server", () => {
 
     expect(context.database.getHealth()).toMatchObject({
       ok: true,
-      migrationVersion: 3,
+      migrationVersion: 4,
       databasePath: context.databaseFilePath
     });
 
@@ -410,6 +410,12 @@ describe("desktop backend server", () => {
     runtime = await startRuntime();
     const packageDirectory = await createLocalPluginPackage(appDataDirectory);
     const resolvedPackageDirectory = await realpath(packageDirectory);
+    const expectedInstallRootPath = join(
+      appDataDirectory,
+      "plugins",
+      "com.engineering-os.filesystem",
+      "0.1.0"
+    );
 
     const registerResponse = await fetch(
       `${runtime.baseUrl}/plugins/register-local`,
@@ -426,7 +432,14 @@ describe("desktop backend server", () => {
     await expect(registerResponse.json()).resolves.toMatchObject({
       plugin: {
         pluginId: "com.engineering-os.filesystem",
-        installPath: resolvedPackageDirectory,
+        installation: {
+          mode: "managed",
+          rootPath: expectedInstallRootPath,
+          source: {
+            type: "local-directory",
+            path: resolvedPackageDirectory
+          }
+        },
         state: "installed",
         enabled: false
       }
@@ -441,11 +454,32 @@ describe("desktop backend server", () => {
       plugins: [
         {
           pluginId: "com.engineering-os.filesystem",
-          installPath: resolvedPackageDirectory,
+          installation: {
+            mode: "managed",
+            rootPath: expectedInstallRootPath
+          },
           state: "installed",
           enabled: false
         }
       ]
+    });
+  });
+
+  it("rejects invalid register-local request payloads at runtime", async () => {
+    runtime = await startRuntime();
+
+    const response = await fetch(`${runtime.baseUrl}/plugins/register-local`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({ packagePath: 123 })
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      code: "PLUGIN_REGISTER_REQUEST_INVALID",
+      message: "Plugin registration request is invalid."
     });
   });
 

@@ -7,7 +7,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@engineering-os/contracts": "workspace:*",
     "@engineering-os/logger": "workspace:*",
     "@engineering-os/platform": "workspace:*"
   },

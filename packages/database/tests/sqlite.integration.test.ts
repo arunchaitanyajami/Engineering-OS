@@ -37,54 +37,78 @@ describe("ApplicationDatabase", () => {
     expect(database.listSessions()).toHaveLength(1);
     expect(database.getHealth()).toMatchObject({
       ok: true,
-      migrationVersion: 3
+      migrationVersion: 4
     });
   });
 
-  it("persists installed plugin registrations", () => {
+  it("provides generic query helpers for repository adapters", () => {
     const database = new ApplicationDatabase(":memory:");
     databases.push(database);
 
     database.runMigrations();
-    database.registerInstalledPlugin({
-      id: "registration-1",
-      pluginId: "com.engineering-os.filesystem",
-      name: "Filesystem Plugin",
-      version: "0.1.0",
-      description: "Reference installed plugin.",
-      installPath: "/plugins/filesystem",
-      manifest: {
-        schemaVersion: "1",
-        id: "com.engineering-os.filesystem",
-        name: "Filesystem Plugin",
-        version: "0.1.0",
-        description: "Reference installed plugin.",
-        publisher: {
-          name: "Engineering OS"
-        },
-        engines: {
-          engineeringOs: ">=0.1.0"
-        },
-        entrypoints: {
-          backend: "./dist/backend/index.js"
-        },
-        capabilities: [],
-        permissions: [],
-        mcp: []
-      },
-      state: "installed",
-      enabled: false,
-      installedAt: "2026-07-14T00:00:00.000Z",
-      updatedAt: "2026-07-14T00:00:00.000Z"
-    });
+    database.execute(
+      `
+        INSERT INTO installed_plugins (
+          id,
+          plugin_id,
+          install_root_path,
+          installation_mode,
+          source_type,
+          source_path,
+          content_hash,
+          manifest_json,
+          state,
+          enabled,
+          installed_at,
+          updated_at,
+          last_error
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        "registration-1",
+        "com.engineering-os.filesystem",
+        "/managed/plugins/filesystem/0.1.0",
+        "managed",
+        "local-directory",
+        "/source/plugins/filesystem",
+        "abc123",
+        JSON.stringify({
+          schemaVersion: "1",
+          id: "com.engineering-os.filesystem",
+          name: "Filesystem Plugin",
+          version: "0.1.0",
+          description: "Reference installed plugin.",
+          publisher: {
+            name: "Engineering OS"
+          },
+          engines: {
+            engineeringOs: ">=0.1.0"
+          },
+          entrypoints: {
+            backend: "./dist/backend/index.js"
+          },
+          capabilities: [],
+          permissions: [],
+          mcp: []
+        }),
+        "installed",
+        0,
+        "2026-07-14T00:00:00.000Z",
+        "2026-07-14T00:00:00.000Z",
+        null
+      ]
+    );
 
-    expect(database.listInstalledPlugins()).toEqual([
-      expect.objectContaining({
-        pluginId: "com.engineering-os.filesystem",
-        installPath: "/plugins/filesystem",
-        state: "installed",
-        enabled: false
-      })
-    ]);
+    expect(
+      database.queryFirst(
+        "SELECT plugin_id, install_root_path, enabled FROM installed_plugins WHERE plugin_id = ?",
+        ["com.engineering-os.filesystem"]
+      )
+    ).toEqual({
+      plugin_id: "com.engineering-os.filesystem",
+      install_root_path: "/managed/plugins/filesystem/0.1.0",
+      enabled: 0
+    });
   });
 });

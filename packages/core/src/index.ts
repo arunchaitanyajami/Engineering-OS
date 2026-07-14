@@ -1,73 +1,29 @@
 import type { Brand, Result } from "@engineering-os/shared";
 import type { Logger } from "@engineering-os/logger";
 import type {
-  EngineeringOsPluginContext,
   PermissionScope,
   PluginManifest
 } from "@engineering-os/contracts";
+import type { EngineeringOsPluginContext } from "@engineering-os/contracts/unstable-runtime";
 
 export type {
-  AuditEvent,
-  CapabilityContent,
-  EngineeringOsPlugin,
-  EngineeringOsPluginContext,
-  ExecutionContext,
   McpServerDefinition,
-  McpServerRegistration,
-  McpTransportConfiguration,
-  NormalizedExecutionError,
-  PermissionGrant,
-  PermissionGrantDecision,
   PermissionScope,
   PluginCapability,
   PluginEntrypoints,
   PluginManifest,
   PluginPermissionRequest,
-  PluginState,
-  PromptDescriptor,
-  ResourceDescriptor,
-  RpcError,
-  RpcResponse,
-  SecretReference,
-  SecretStore,
-  ToolAnnotations,
-  ToolDescriptor,
-  ToolExecutionRequest,
-  ToolExecutionResult,
-  ToolRiskLevel
+  PluginSecretReference
 } from "@engineering-os/contracts";
 export {
-  activatePluginRequestSchema,
-  auditEventSchema,
-  capabilityContentSchema,
-  deactivatePluginRequestSchema,
-  executionContextSchema,
-  healthCheckRequestSchema,
-  initializePluginRequestSchema,
-  invokePluginCapabilityRequestSchema,
   mcpServerDefinitionSchema,
-  mcpServerRegistrationSchema,
-  mcpTransportConfigurationSchema,
-  normalizedExecutionErrorSchema,
-  permissionGrantDecisionSchema,
-  permissionGrantSchema,
   permissionScope,
   permissionScopeSchema,
+  pluginCapabilitySchema,
+  pluginEntrypointsSchema,
   pluginManifestSchema,
   pluginPermissionRequestSchema,
-  pluginRuntimeRequestSchema,
-  pluginStateSchema,
-  promptDescriptorSchema,
-  readConfigurationRequestSchema,
-  resourceDescriptorSchema,
-  rpcErrorSchema,
-  rpcResponseSchema,
-  secretReferenceSchema,
-  toolAnnotationsSchema,
-  toolDescriptorSchema,
-  toolExecutionRequestSchema,
-  toolExecutionResultSchema,
-  toolRiskLevelSchema
+  pluginSecretReferenceSchema
 } from "@engineering-os/contracts";
 
 export type PluginId = Brand<string, "PluginId">;

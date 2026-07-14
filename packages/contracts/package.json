@@ -4,15 +4,20 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./unstable-runtime": "./src/unstable-runtime.ts"
   },
   "dependencies": {
     "@engineering-os/shared": "workspace:*",
+    "semver": "^7.8.5",
     "zod": "^3.24.1"
   },
   "scripts": {
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests --ext .ts --no-error-on-unmatched-pattern"
+  },
+  "devDependencies": {
+    "@types/semver": "^7.7.1"
   }
 }

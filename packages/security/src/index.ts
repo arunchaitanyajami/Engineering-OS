@@ -1,23 +1,27 @@
 export type {
+  PermissionScope as Permission,
+  PluginPermissionRequest as PermissionRequest
+} from "@engineering-os/contracts";
+export {
+  permissionScope as permission,
+  permissionScopeSchema,
+  pluginPermissionRequestSchema as permissionRequestSchema,
+} from "@engineering-os/contracts";
+export type {
   AuditEvent,
   AuditOutcome,
   PermissionGrant,
   PermissionGrantDecision,
-  PermissionScope as Permission,
-  PluginPermissionRequest as PermissionRequest,
-  SecretReference,
-  SecretStore
-} from "@engineering-os/contracts";
+  SecretStore,
+  SystemSecretReference as SecretReference
+} from "@engineering-os/contracts/unstable-runtime";
 export {
-  REDACTED_VALUE,
-  permissionScope as permission,
-  permissionScopeSchema,
   permissionGrantDecisionSchema,
   permissionGrantSchema,
-  pluginPermissionRequestSchema as permissionRequestSchema,
+  REDACTED_VALUE,
   redactKeys,
-  secretReferenceSchema
-} from "@engineering-os/contracts";
+  systemSecretReferenceSchema as secretReferenceSchema
+} from "@engineering-os/contracts/unstable-runtime";
 
 import { permissionScope } from "@engineering-os/contracts";
 

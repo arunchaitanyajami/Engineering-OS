@@ -1,10 +1,5 @@
 export type OperatingSystem =
-  | "macos"
-  | "windows"
-  | "linux"
-  | "android"
-  | "ios"
-  | "unknown";
+  "macos" | "windows" | "linux" | "android" | "ios" | "unknown";
 
 export interface PlatformInfo {
   readonly operatingSystem: OperatingSystem;
@@ -15,9 +10,44 @@ export interface PlatformInfo {
   readonly isTauri: boolean;
 }
 
+export interface DatabaseStatus {
+  readonly ok: boolean;
+  readonly migrationVersion: number;
+  readonly databasePath: string;
+}
+
+export interface LocalServicesStatus {
+  readonly database: DatabaseStatus;
+  readonly logFilePath: string;
+  readonly configFilePath: string;
+}
+
+export interface EngineeringSession {
+  readonly id: string;
+  readonly title: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly status: "active" | "archived";
+}
+
+export interface PersistedLogEntry {
+  readonly timestamp: string;
+  readonly level: "trace" | "debug" | "info" | "warn" | "error";
+  readonly scope: string;
+  readonly message: string;
+  readonly context?: Record<string, unknown>;
+  readonly correlationId?: string;
+}
+
 export interface DesktopPlatform {
   getAppVersion(): Promise<string>;
   getPlatformInfo(): Promise<PlatformInfo>;
+  initializeLocalServices(): Promise<LocalServicesStatus>;
+  loadPersistedConfig(): Promise<string | null>;
+  savePersistedConfig(serializedConfig: string): Promise<void>;
+  listSessions(): Promise<readonly EngineeringSession[]>;
+  createSession(session: EngineeringSession): Promise<EngineeringSession>;
+  writeLogEntry(entry: PersistedLogEntry): Promise<void>;
   openExternalUrl(url: string): Promise<void>;
 }
 
@@ -35,6 +65,9 @@ export class MockDesktopPlatform implements DesktopPlatform {
   ) {}
 
   readonly openedUrls: string[] = [];
+  persistedConfig: string | null = null;
+  readonly sessions: EngineeringSession[] = [];
+  readonly logEntries: PersistedLogEntry[] = [];
 
   async getAppVersion(): Promise<string> {
     return this.version;
@@ -42,6 +75,41 @@ export class MockDesktopPlatform implements DesktopPlatform {
 
   async getPlatformInfo(): Promise<PlatformInfo> {
     return this.platformInfo;
+  }
+
+  async initializeLocalServices(): Promise<LocalServicesStatus> {
+    return {
+      database: {
+        ok: true,
+        migrationVersion: 2,
+        databasePath: "/mock/engineering-os/app.sqlite"
+      },
+      logFilePath: "/mock/engineering-os/logs/application.log",
+      configFilePath: "/mock/engineering-os/config/application-config.json"
+    };
+  }
+
+  async loadPersistedConfig(): Promise<string | null> {
+    return this.persistedConfig;
+  }
+
+  async savePersistedConfig(serializedConfig: string): Promise<void> {
+    this.persistedConfig = serializedConfig;
+  }
+
+  async listSessions(): Promise<readonly EngineeringSession[]> {
+    return this.sessions;
+  }
+
+  async createSession(
+    session: EngineeringSession
+  ): Promise<EngineeringSession> {
+    this.sessions.unshift(session);
+    return session;
+  }
+
+  async writeLogEntry(entry: PersistedLogEntry): Promise<void> {
+    this.logEntries.push(entry);
   }
 
   async openExternalUrl(url: string): Promise<void> {

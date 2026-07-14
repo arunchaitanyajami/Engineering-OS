@@ -1,4 +1,9 @@
-import { Component, type ErrorInfo, type PropsWithChildren, type ReactNode } from "react";
+import {
+  Component,
+  type ErrorInfo,
+  type PropsWithChildren,
+  type ReactNode
+} from "react";
 
 import { Button, ErrorState } from "@engineering-os/ui";
 
@@ -33,7 +38,9 @@ export class RootErrorBoundary extends Component<
               ? this.state.error.message
               : "The desktop shell hit an unrecoverable rendering error."
           }
-          action={<Button onClick={() => window.location.reload()}>Reload</Button>}
+          action={
+            <Button onClick={() => window.location.reload()}>Reload</Button>
+          }
         />
       </div>
     );

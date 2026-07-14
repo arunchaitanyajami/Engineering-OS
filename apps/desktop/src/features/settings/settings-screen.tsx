@@ -3,19 +3,21 @@ import type { ChangeEvent } from "react";
 import type { ThemePreference } from "@engineering-os/config";
 import { Badge, PageHeader, PanelCard } from "@engineering-os/ui";
 
-import { useApplicationActions, useApplicationState } from "../../stores/application-store";
+import {
+  useApplicationActions,
+  useApplicationState
+} from "../../stores/application-store";
 
 const updateCheckboxSetting =
-  (
-    updateSetting: (checked: boolean) => Promise<unknown>
-  ) =>
+  (updateSetting: (checked: boolean) => Promise<unknown>) =>
   (event: ChangeEvent<HTMLInputElement>) => {
     void updateSetting(event.target.checked);
   };
 
 export function SettingsScreen() {
   const { updateSettings } = useApplicationActions();
-  const { appVersion, config, platformInfo } = useApplicationState();
+  const { appVersion, config, localServicesStatus, platformInfo } =
+    useApplicationState();
 
   const handleThemeChange = (event: ChangeEvent<HTMLSelectElement>) => {
     void updateSettings({
@@ -122,7 +124,13 @@ export function SettingsScreen() {
             </div>
             <div className="summary-list__row">
               <span>Log location</span>
-              <span>{platformInfo?.appDataDirectory ?? "Loading"}</span>
+              <span>{localServicesStatus?.logFilePath ?? "Loading"}</span>
+            </div>
+            <div className="summary-list__row">
+              <span>Database path</span>
+              <span>
+                {localServicesStatus?.database.databasePath ?? "Loading"}
+              </span>
             </div>
           </div>
         </PanelCard>

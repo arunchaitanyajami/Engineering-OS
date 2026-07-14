@@ -52,7 +52,9 @@ export class ApplicationCommandRegistry {
   }
 }
 
-export const shouldHandleGlobalShortcut = (target: EventTarget | null): boolean => {
+export const shouldHandleGlobalShortcut = (
+  target: EventTarget | null
+): boolean => {
   if (!(target instanceof HTMLElement)) {
     return true;
   }

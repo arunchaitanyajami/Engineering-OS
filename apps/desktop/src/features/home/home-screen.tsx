@@ -1,17 +1,26 @@
 import { Link, useNavigate } from "react-router-dom";
 
-import { Badge, Button, EmptyState, PageHeader, PanelCard } from "@engineering-os/ui";
+import {
+  Badge,
+  Button,
+  EmptyState,
+  PageHeader,
+  PanelCard
+} from "@engineering-os/ui";
 
-import { useApplicationActions, useApplicationState } from "../../stores/application-store";
+import {
+  useApplicationActions,
+  useApplicationState
+} from "../../stores/application-store";
 
 export function HomeScreen() {
   const navigate = useNavigate();
   const { createSession } = useApplicationActions();
   const { sessions, platformInfo } = useApplicationState();
 
-  const handleCreateSession = () => {
-    const session = createSession();
-    void navigate(`/sessions/${session.id}`);
+  const handleCreateSession = async () => {
+    const session = await createSession();
+    await navigate(`/sessions/${session.id}`);
   };
 
   return (
@@ -20,7 +29,11 @@ export function HomeScreen() {
         eyebrow="Workspace"
         title="Engineering OS"
         description="Desktop-first engineering workspace foundation for sessions, plugins, workflows, and MCP integrations."
-        actions={<Button onClick={handleCreateSession}>New Session</Button>}
+        actions={
+          <Button onClick={() => void handleCreateSession()}>
+            New Session
+          </Button>
+        }
       />
 
       <div className="content-grid">
@@ -30,7 +43,9 @@ export function HomeScreen() {
             provider yet.
           </p>
           <div className="action-row">
-            <Button onClick={handleCreateSession}>Create Session Shell</Button>
+            <Button onClick={() => void handleCreateSession()}>
+              Create Session Shell
+            </Button>
           </div>
         </PanelCard>
 

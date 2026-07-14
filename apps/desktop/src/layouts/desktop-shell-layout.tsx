@@ -23,7 +23,10 @@ import {
 
 const getCurrentRoute = (pathname: string) =>
   appRouteDefinitions.find((routeDefinition) =>
-    matchPath({ path: routeDefinition.path, end: routeDefinition.id !== "sessions" }, pathname)
+    matchPath(
+      { path: routeDefinition.path, end: routeDefinition.id !== "sessions" },
+      pathname
+    )
   );
 
 const platformShortcutLabel = (shortcut: string): string =>
@@ -50,7 +53,9 @@ export function DesktopShellLayout() {
   const state = useApplicationState();
   const currentRoute =
     getCurrentRoute(location.pathname) ??
-    appRouteDefinitions.find((routeDefinition) => routeDefinition.id === "home");
+    appRouteDefinitions.find(
+      (routeDefinition) => routeDefinition.id === "home"
+    );
 
   const commandRegistry = useMemo(() => {
     const registry = new ApplicationCommandRegistry();
@@ -85,10 +90,10 @@ export function DesktopShellLayout() {
         category: "Workspace",
         keywords: ["new", "session", "workspace"],
         shortcut: platformShortcutLabel("Ctrl+N"),
-        execute: () => {
-          const session = createSession();
-          return navigate(`/sessions/${session.id}`);
-        }
+        execute: () =>
+          createSession().then((session) => {
+            navigate(`/sessions/${session.id}`);
+          })
       },
       {
         id: "theme.toggle",
@@ -192,11 +197,19 @@ export function DesktopShellLayout() {
         </div>
 
         <SidebarNavigation
-          items={appRouteDefinitions.filter((routeDefinition) => routeDefinition.enabled)}
+          items={appRouteDefinitions.filter(
+            (routeDefinition) => routeDefinition.enabled
+          )}
           renderItem={(routeDefinition) => (
             <SidebarItem
               active={Boolean(
-                matchPath({ path: routeDefinition.path, end: routeDefinition.id !== "sessions" }, location.pathname)
+                matchPath(
+                  {
+                    path: routeDefinition.path,
+                    end: routeDefinition.id !== "sessions"
+                  },
+                  location.pathname
+                )
               )}
               icon={<routeDefinition.icon />}
               key={routeDefinition.id}

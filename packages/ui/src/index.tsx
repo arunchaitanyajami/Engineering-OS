@@ -80,7 +80,9 @@ export function PageHeader({
         <h1>{title}</h1>
         <p className="ui-muted">{description}</p>
       </div>
-      {actions ? <div className="ui-page-header__actions">{actions}</div> : null}
+      {actions ? (
+        <div className="ui-page-header__actions">{actions}</div>
+      ) : null}
     </header>
   );
 }
@@ -151,7 +153,9 @@ export function StatusIndicator({
 }) {
   return (
     <div className="ui-status-indicator">
-      <span className={`ui-status-indicator__dot ui-status-indicator__dot--${tone}`} />
+      <span
+        className={`ui-status-indicator__dot ui-status-indicator__dot--${tone}`}
+      />
       <span className="ui-status-indicator__label">{label}</span>
       <span className="ui-status-indicator__value">{value}</span>
     </div>

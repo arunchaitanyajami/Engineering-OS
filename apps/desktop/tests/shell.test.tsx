@@ -12,9 +12,7 @@ describe("desktop shell", () => {
     expect(
       await screen.findByRole("heading", { name: "Engineering OS" })
     ).toBeInTheDocument();
-    expect(
-      screen.getByText("Desktop Shell")
-    ).toBeInTheDocument();
+    expect(screen.getByText("Desktop Shell")).toBeInTheDocument();
     expect(
       screen.getByText(/Start a new engineering session/i)
     ).toBeInTheDocument();

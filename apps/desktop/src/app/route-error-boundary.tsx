@@ -15,10 +15,10 @@ export function RouteErrorBoundary() {
     <div className="app-route-fallback">
       <ErrorState
         title="Route unavailable"
-        description={
-          import.meta.env.DEV ? error.message : error.userMessage
+        description={import.meta.env.DEV ? error.message : error.userMessage}
+        action={
+          <Button onClick={() => window.location.reload()}>Reload</Button>
         }
-        action={<Button onClick={() => window.location.reload()}>Reload</Button>}
       />
     </div>
   );

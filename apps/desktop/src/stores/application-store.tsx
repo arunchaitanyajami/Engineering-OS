@@ -16,17 +16,17 @@ import {
   type PersistedApplicationConfig
 } from "@engineering-os/config";
 import { createLogger, type Logger } from "@engineering-os/logger";
-import type { DesktopPlatform, PlatformInfo } from "@engineering-os/platform";
+import type {
+  DesktopPlatform,
+  EngineeringSession,
+  LocalServicesStatus,
+  PlatformInfo
+} from "@engineering-os/platform";
 
 import {
   normalizeApplicationError,
   type ApplicationError
 } from "../services/application-errors";
-import {
-  loadSessions,
-  saveSessions,
-  type EngineeringSession
-} from "../services/session-storage";
 
 export type ApplicationInitializationState =
   | { status: "booting" }
@@ -50,6 +50,7 @@ interface ApplicationStoreState {
   readonly initializationState: ApplicationInitializationState;
   readonly config: PersistedApplicationConfig;
   readonly platformInfo: PlatformInfo | null;
+  readonly localServicesStatus: LocalServicesStatus | null;
   readonly appVersion: string;
   readonly sessions: readonly EngineeringSession[];
   readonly isCommandPaletteOpen: boolean;
@@ -62,12 +63,15 @@ interface ApplicationStoreActions {
   updateSettings(
     partialSettings: Partial<ApplicationSettings>
   ): Promise<PersistedApplicationConfig>;
-  createSession(title?: string): EngineeringSession;
+  createSession(title?: string): Promise<EngineeringSession>;
 }
 
-const ApplicationStateContext = createContext<ApplicationStoreState | null>(null);
-const ApplicationActionsContext =
-  createContext<ApplicationStoreActions | null>(null);
+const ApplicationStateContext = createContext<ApplicationStoreState | null>(
+  null
+);
+const ApplicationActionsContext = createContext<ApplicationStoreActions | null>(
+  null
+);
 
 const SYSTEM_THEME_QUERY = "(prefers-color-scheme: dark)";
 
@@ -102,7 +106,10 @@ const applyTheme = (theme: "light" | "dark") => {
 };
 
 export const buildStatusEntries = (
-  state: Pick<ApplicationStoreState, "appVersion" | "platformInfo">
+  state: Pick<
+    ApplicationStoreState,
+    "appVersion" | "platformInfo" | "localServicesStatus"
+  >
 ): readonly StatusEntry[] => [
   {
     id: "version",
@@ -119,8 +126,10 @@ export const buildStatusEntries = (
   {
     id: "database",
     label: "Database",
-    value: "Bootstrap pending",
-    tone: "warning"
+    value: state.localServicesStatus?.database.ok
+      ? `Ready (v${state.localServicesStatus.database.migrationVersion})`
+      : "Bootstrap pending",
+    tone: state.localServicesStatus?.database.ok ? "success" : "warning"
   },
   {
     id: "mcp",
@@ -162,6 +171,8 @@ export function ApplicationStoreProvider({
     defaultPersistedApplicationConfig
   );
   const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null);
+  const [localServicesStatus, setLocalServicesStatus] =
+    useState<LocalServicesStatus | null>(null);
   const [appVersion, setAppVersion] = useState("0.1.0");
   const [sessions, setSessions] = useState<readonly EngineeringSession[]>([]);
   const [isCommandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -181,7 +192,6 @@ export function ApplicationStoreProvider({
         }
 
         setConfig(loadedConfig);
-        setSessions(loadSessions());
 
         setInitializationState({ status: "initializing-platform" });
         logger.info("Initializing platform bridge.");
@@ -199,6 +209,17 @@ export function ApplicationStoreProvider({
 
         setInitializationState({ status: "checking-local-services" });
         logger.info("Checking local services.");
+        const [resolvedLocalServices, storedSessions] = await Promise.all([
+          platform.initializeLocalServices(),
+          platform.listSessions()
+        ]);
+
+        if (cancelled) {
+          return;
+        }
+
+        setLocalServicesStatus(resolvedLocalServices);
+        setSessions(storedSessions);
 
         setInitializationState({ status: "ready" });
       } catch (error) {
@@ -247,7 +268,7 @@ export function ApplicationStoreProvider({
   );
 
   const createSession = useCallback(
-    (title?: string) => {
+    async (title?: string) => {
       const timestamp = new Date().toISOString();
       const session: EngineeringSession = {
         id: createSessionId(),
@@ -257,12 +278,13 @@ export function ApplicationStoreProvider({
         status: "active"
       };
 
-      setSessions((currentSessions) => saveSessions([session, ...currentSessions]));
+      const persistedSession = await platform.createSession(session);
+      setSessions((currentSessions) => [persistedSession, ...currentSessions]);
       logger.info("Created local session shell.", { sessionId: session.id });
 
-      return session;
+      return persistedSession;
     },
-    [logger, sessions]
+    [logger, platform, sessions]
   );
 
   const resolvedTheme = useMemo(
@@ -275,6 +297,7 @@ export function ApplicationStoreProvider({
       initializationState,
       config,
       platformInfo,
+      localServicesStatus,
       appVersion,
       sessions,
       isCommandPaletteOpen,
@@ -285,6 +308,7 @@ export function ApplicationStoreProvider({
       config,
       initializationState,
       isCommandPaletteOpen,
+      localServicesStatus,
       platformInfo,
       resolvedTheme,
       sessions

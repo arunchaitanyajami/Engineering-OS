@@ -19,13 +19,7 @@ describe("CommandPalette", () => {
       execute
     });
 
-    render(
-      <CommandPalette
-        isOpen
-        onClose={vi.fn()}
-        registry={registry}
-      />
-    );
+    render(<CommandPalette isOpen onClose={vi.fn()} registry={registry} />);
 
     fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
 

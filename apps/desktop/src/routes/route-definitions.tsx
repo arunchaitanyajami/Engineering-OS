@@ -1,7 +1,6 @@
 import type { ComponentType } from "react";
 
-const createLetterIcon =
-  (letter: string): ComponentType =>
+const createLetterIcon = (letter: string): ComponentType =>
   function LetterIcon() {
     return (
       <span aria-hidden="true" className="route-icon">

@@ -10,8 +10,9 @@ export function CreateSessionRoute() {
   const { createSession } = useApplicationActions();
 
   useEffect(() => {
-    const session = createSession();
-    void navigate(`/sessions/${session.id}`, { replace: true });
+    void createSession().then((session) =>
+      navigate(`/sessions/${session.id}`, { replace: true })
+    );
   }, [createSession, navigate]);
 
   return (

@@ -5,17 +5,24 @@ import { Button, ErrorState, LoadingState } from "@engineering-os/ui";
 import { RootErrorBoundary } from "./app/root-error-boundary";
 import { TauriDesktopPlatform } from "./platform/tauri-desktop-platform";
 import { AppRouter } from "./routes/router";
-import { BrowserConfigStorage } from "./services/browser-config-storage";
+import { DesktopConfigStorage } from "./services/desktop-config-storage";
+import {
+  CompositeLogTransport,
+  PlatformLogTransport
+} from "./services/platform-log-transport";
 import {
   ApplicationStoreProvider,
   useApplicationActions,
   useApplicationState
 } from "./stores/application-store";
 
-const configStore = new ApplicationConfigStore(new BrowserConfigStorage());
 const platform = new TauriDesktopPlatform();
+const configStore = new ApplicationConfigStore(
+  new DesktopConfigStorage(platform)
+);
 const logger = createLogger({
-  component: "desktop-shell"
+  component: "desktop-shell",
+  transport: new CompositeLogTransport([new PlatformLogTransport(platform)])
 });
 
 function ApplicationBootstrap() {

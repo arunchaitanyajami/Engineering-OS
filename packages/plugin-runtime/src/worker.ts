@@ -17,11 +17,9 @@ import {
   type PluginRuntimeStatus,
   type RpcError
 } from "@engineering-os/contracts/unstable-runtime";
+import { calculateManagedInstallationHash } from "@engineering-os/plugin-registry";
 
 interface RuntimePluginState {
-  readonly configurationStore: Map<string, unknown>;
-  readonly storageStore: Map<string, unknown>;
-  readonly secretsStore: Map<string, string>;
   pluginId: string | null;
   installationRootPath: string | null;
   manifest: PluginManifest | null;
@@ -33,15 +31,17 @@ interface RuntimePluginState {
 }
 
 const state: RuntimePluginState = {
-  configurationStore: new Map(),
-  storageStore: new Map(),
-  secretsStore: new Map(),
   pluginId: null,
   installationRootPath: null,
   manifest: null,
   instance: null,
   status: "stopped"
 };
+
+const createUnsupportedMilestone23Error = (apiName: string) =>
+  new Error(
+    `${apiName} is not available in Milestone 2.3. Trusted local plugins run out of process, but process isolation is not a security sandbox yet.`
+  );
 
 const createContext = (manifest: PluginManifest): EngineeringOsPluginContext => ({
   plugin: {
@@ -74,77 +74,93 @@ const createContext = (manifest: PluginManifest): EngineeringOsPluginContext => 
     }
   },
   configuration: {
-    async get<TValue>(key: string) {
-      return (state.configurationStore.get(key) as TValue | undefined) ?? null;
+    async get() {
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin configuration access")
+      );
     },
-    async set<TValue>(key: string, value: TValue) {
-      state.configurationStore.set(key, value);
+    async set() {
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin configuration persistence")
+      );
     },
-    async delete(key: string) {
-      state.configurationStore.delete(key);
+    async delete() {
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin configuration persistence")
+      );
     }
   },
   secrets: {
-    async get(key: string) {
-      return state.secretsStore.get(key) ?? null;
+    async get() {
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin secret storage")
+      );
     },
-    async set(key: string, value: string) {
-      state.secretsStore.set(key, value);
+    async set() {
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin secret storage")
+      );
     },
-    async delete(key: string) {
-      state.secretsStore.delete(key);
+    async delete() {
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin secret storage")
+      );
     },
     async listKeys() {
-      return [...state.secretsStore.keys()];
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin secret storage")
+      );
     }
   },
   storage: {
-    async get<TValue>(key: string) {
-      return (state.storageStore.get(key) as TValue | undefined) ?? null;
+    async get() {
+      return Promise.reject(createUnsupportedMilestone23Error("Plugin storage"));
     },
-    async set<TValue>(key: string, value: TValue) {
-      state.storageStore.set(key, value);
+    async set() {
+      return Promise.reject(createUnsupportedMilestone23Error("Plugin storage"));
     },
-    async delete(key: string) {
-      state.storageStore.delete(key);
+    async delete() {
+      return Promise.reject(createUnsupportedMilestone23Error("Plugin storage"));
     },
     async listKeys() {
-      return [...state.storageStore.keys()];
+      return Promise.reject(createUnsupportedMilestone23Error("Plugin storage"));
     }
   },
   permissions: {
     async has() {
-      return false;
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin permission broker")
+      );
     },
     async request() {
-      return "deny";
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin permission broker")
+      );
     }
   },
   events: {
     async emit() {
-      return;
+      return Promise.reject(createUnsupportedMilestone23Error("Plugin event bus"));
     },
     async subscribe() {
-      return async () => undefined;
+      return Promise.reject(createUnsupportedMilestone23Error("Plugin event bus"));
     }
   },
   mcp: {
     async registerServer() {
-      throw new Error("MCP registration is not implemented in Milestone 2.3.");
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin MCP registration")
+      );
     },
     async listTools() {
-      return [];
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin MCP tool access")
+      );
     },
     async executeTool() {
-      return {
-        status: "error",
-        content: [],
-        error: {
-          code: "PLUGIN_RUNTIME_MCP_UNAVAILABLE",
-          message: "MCP execution is not implemented in Milestone 2.3.",
-          retryable: false
-        }
-      };
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin MCP tool access")
+      );
     }
   }
 });
@@ -227,6 +243,25 @@ const ensureManifestMatches = (
   }
 };
 
+const ensureRequestTargetsInitializedPlugin = (pluginIdValue: string) => {
+  if (state.pluginId && state.pluginId !== pluginIdValue) {
+    throw new Error("Plugin runtime request targets a different plugin.");
+  }
+};
+
+const verifyManagedInstallationBeforeImport = async (
+  installationRootPath: string,
+  expectedContentHash: string
+) => {
+  const currentHash = await calculateManagedInstallationHash(installationRootPath);
+
+  if (currentHash !== expectedContentHash) {
+    throw new Error(
+      "Managed installation integrity verification failed inside the plugin runtime worker."
+    );
+  }
+};
+
 const handleRequest = async (request: PluginRuntimeRequest) => {
   switch (request.type) {
     case "initialize-plugin": {
@@ -239,6 +274,11 @@ const handleRequest = async (request: PluginRuntimeRequest) => {
       state.installationRootPath = request.installationRootPath;
       state.manifest = request.manifest;
       delete state.lastError;
+
+      await verifyManagedInstallationBeforeImport(
+        request.installationRootPath,
+        request.expectedContentHash
+      );
 
       const moduleUrl = pathToFileURL(
         join(request.installationRootPath, request.manifest.entrypoints.backend)
@@ -257,6 +297,8 @@ const handleRequest = async (request: PluginRuntimeRequest) => {
     }
 
     case "activate-plugin": {
+      ensureRequestTargetsInitializedPlugin(request.pluginId);
+
       if (!state.instance) {
         throw new Error(`Plugin '${request.pluginId}' is not initialized.`);
       }
@@ -268,6 +310,8 @@ const handleRequest = async (request: PluginRuntimeRequest) => {
     }
 
     case "deactivate-plugin": {
+      ensureRequestTargetsInitializedPlugin(request.pluginId);
+
       if (!state.instance) {
         throw new Error(`Plugin '${request.pluginId}' is not initialized.`);
       }
@@ -278,10 +322,13 @@ const handleRequest = async (request: PluginRuntimeRequest) => {
     }
 
     case "health-check": {
+      ensureRequestTargetsInitializedPlugin(request.pluginId);
       return createSnapshot();
     }
 
     case "shutdown-plugin": {
+      ensureRequestTargetsInitializedPlugin(request.pluginId);
+
       if (state.instance) {
         if (state.status === "running") {
           state.status = "stopping";
@@ -319,6 +366,7 @@ const handleShutdownSignal = async (signal: string) => {
       }
 
       await state.instance.dispose();
+      state.instance = null;
     }
   } catch (error) {
     console.error(

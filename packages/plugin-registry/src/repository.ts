@@ -62,6 +62,7 @@ export interface PluginRegistryRepository {
   findAll(): readonly InstalledPlugin[];
   findByPluginId(pluginId: string): InstalledPlugin | null;
   save(plugin: InstalledPlugin): InstalledPlugin;
+  updateEnabled(pluginId: string, enabled: boolean, updatedAt: string): InstalledPlugin;
   deleteByPluginId(pluginId: string): void;
 }
 
@@ -163,6 +164,33 @@ export class SqlitePluginRegistryRepository
     if (!persistedPlugin) {
       throw new Error(
         `Installed plugin '${plugin.pluginId}' could not be read after insert.`
+      );
+    }
+
+    return persistedPlugin;
+  }
+
+  updateEnabled(
+    pluginId: string,
+    enabled: boolean,
+    updatedAt: string
+  ): InstalledPlugin {
+    this.database.execute(
+      `
+        UPDATE installed_plugins
+        SET
+          enabled = ?,
+          updated_at = ?
+        WHERE plugin_id = ?
+      `,
+      [enabled ? 1 : 0, updatedAt, pluginId]
+    );
+
+    const persistedPlugin = this.findByPluginId(pluginId);
+
+    if (!persistedPlugin) {
+      throw new Error(
+        `Installed plugin '${pluginId}' could not be read after enabled-state update.`
       );
     }
 

@@ -530,6 +530,24 @@ describe("desktop backend server", () => {
       body: JSON.stringify({ packagePath: packageDirectory })
     });
 
+    const enableResponse = await fetch(`${runtime.baseUrl}/plugins/enable`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        pluginId: "com.engineering-os.runtime-test"
+      })
+    });
+
+    expect(enableResponse.status).toBe(200);
+    await expect(enableResponse.json()).resolves.toMatchObject({
+      plugin: {
+        pluginId: "com.engineering-os.runtime-test",
+        enabled: true
+      }
+    });
+
     const startResponse = await fetch(`${runtime.baseUrl}/plugins/runtime/start`, {
       method: "POST",
       headers: authenticatedHeaders({
@@ -581,6 +599,24 @@ describe("desktop backend server", () => {
         pluginId: "com.engineering-os.runtime-test",
         status: "stopped",
         healthy: false
+      }
+    });
+
+    const disableResponse = await fetch(`${runtime.baseUrl}/plugins/disable`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        pluginId: "com.engineering-os.runtime-test"
+      })
+    });
+
+    expect(disableResponse.status).toBe(200);
+    await expect(disableResponse.json()).resolves.toMatchObject({
+      plugin: {
+        pluginId: "com.engineering-os.runtime-test",
+        enabled: false
       }
     });
   });

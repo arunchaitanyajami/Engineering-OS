@@ -444,6 +444,7 @@ export const initializePluginRequestSchema = z
     requestId: z.string().min(1),
     pluginId: pluginIdSchema,
     installationRootPath: genericPathSchema,
+    expectedContentHash: z.string().trim().length(64),
     manifest: pluginManifestSchema
   })
   .strict();

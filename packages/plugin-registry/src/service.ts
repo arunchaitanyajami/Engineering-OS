@@ -373,6 +373,35 @@ export class PluginRegistryService {
     return this.options.repository.findByPluginId(pluginId);
   }
 
+  enableInstalledPlugin(pluginId: string): InstalledPlugin {
+    return this.updateInstalledPluginEnabled(pluginId, true);
+  }
+
+  disableInstalledPlugin(pluginId: string): InstalledPlugin {
+    return this.updateInstalledPluginEnabled(pluginId, false);
+  }
+
+  private updateInstalledPluginEnabled(
+    pluginId: string,
+    enabled: boolean
+  ): InstalledPlugin {
+    const existingPlugin = this.options.repository.findByPluginId(pluginId);
+
+    if (!existingPlugin) {
+      throw new PluginRegistryError(
+        "PLUGIN_NOT_FOUND",
+        `Plugin '${pluginId}' is not registered.`,
+        404
+      );
+    }
+
+    return this.options.repository.updateEnabled(
+      pluginId,
+      enabled,
+      new Date().toISOString()
+    );
+  }
+
   private async runWithInstallationLock<T>(
     pluginId: string,
     operation: () => Promise<T>

@@ -358,4 +358,38 @@ describe("PluginRegistryService", () => {
       calculateManagedInstallationHash(installedPlugins[0]!.installation.rootPath)
     ).resolves.toBe(installedPlugins[0]!.installation.contentHash);
   });
+
+  it("updates the enabled state for an installed plugin", async () => {
+    const fixturesDirectory = await mkdtemp(
+      join(tmpdir(), "engineering-os-plugin-registry-")
+    );
+    directories.push(fixturesDirectory);
+
+    const database = new ApplicationDatabase(":memory:");
+    database.runMigrations();
+    databases.push(database);
+    const installationsRootPath = join(fixturesDirectory, "managed-plugins");
+
+    const registry = new PluginRegistryService({
+      repository: new SqlitePluginRegistryRepository(database),
+      logger: createLogger({ component: "plugin-registry-test" }),
+      engineeringOsVersion: "0.1.0",
+      installationsRootPath
+    });
+    const packageDirectory = await createLocalPluginPackage(fixturesDirectory, {
+      id: "com.engineering-os.enablement"
+    });
+
+    await registry.registerLocalPluginPackage(packageDirectory);
+
+    const enabledPlugin = registry.enableInstalledPlugin(
+      "com.engineering-os.enablement"
+    );
+    expect(enabledPlugin.enabled).toBe(true);
+
+    const disabledPlugin = registry.disableInstalledPlugin(
+      "com.engineering-os.enablement"
+    );
+    expect(disabledPlugin.enabled).toBe(false);
+  });
 });

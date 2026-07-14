@@ -859,6 +859,47 @@ export const createDesktopBackendHandler =
         return;
       }
 
+      if (request.method === "POST" && requestUrl.pathname === "/plugins/enable") {
+        const { pluginId } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          pluginRuntimeControlRequestSchema,
+          "PLUGIN_ENABLE_REQUEST_INVALID",
+          "Plugin enable request is invalid."
+        );
+
+        writeJson(response, {
+          plugin: context.pluginRegistry.enableInstalledPlugin(pluginId)
+        });
+        return;
+      }
+
+      if (request.method === "POST" && requestUrl.pathname === "/plugins/disable") {
+        const { pluginId } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          pluginRuntimeControlRequestSchema,
+          "PLUGIN_DISABLE_REQUEST_INVALID",
+          "Plugin disable request is invalid."
+        );
+
+        await context.pluginRuntime.stopPlugin(pluginId).catch((error: unknown) => {
+          if (
+            error instanceof PluginRuntimeError &&
+            error.code === "PLUGIN_RUNTIME_NOT_RUNNING"
+          ) {
+            return;
+          }
+
+          throw error;
+        });
+
+        writeJson(response, {
+          plugin: context.pluginRegistry.disableInstalledPlugin(pluginId)
+        });
+        return;
+      }
+
       if (request.method === "GET" && requestUrl.pathname === "/plugins/runtime") {
         const pluginId = requestUrl.searchParams.get("pluginId")?.trim();
 

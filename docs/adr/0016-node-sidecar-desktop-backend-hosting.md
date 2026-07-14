@@ -28,12 +28,30 @@ The runtime split is:
 
 Frontend-to-backend communication uses a typed local HTTP contract over loopback. The React application reaches the backend only through the `DesktopPlatform` abstraction and narrowly scoped Tauri commands. The UI does not import backend packages directly and does not call unrestricted Tauri APIs directly.
 
+The loopback transport is authenticated per application launch:
+
+- Tauri generates or receives a per-launch bearer token
+- Tauri passes that token to the Node sidecar through process environment
+- the renderer receives the runtime backend connection descriptor only through a narrow Tauri command
+- every backend request must include `Authorization: Bearer <runtime-token>`
+- the token is never persisted and is not written to logs
+
+The backend runtime address is also per-launch:
+
+- development uses a dynamically allocated loopback port selected by the dev launcher
+- production starts the backend with port `0` and lets the operating system allocate an available port
+- the sidecar reports its actual runtime port back to Tauri through a controlled startup message
+- the renderer never assumes a global fixed port
+
 The startup model is:
 
 1. Tauri starts.
-2. Rust resolves the packaged backend bundle and launches the Node sidecar.
-3. The sidecar initializes the application data directory, SQLite database, migrations, and log sink.
-4. React uses the platform abstraction to call either native Tauri commands or the typed desktop backend endpoints.
+2. Rust prepares a per-launch backend connection descriptor, including a runtime authentication token.
+3. Rust resolves the packaged backend bundle and launches the Node sidecar.
+4. The sidecar initializes the application data directory, SQLite database, migrations, log sink, and bound loopback port.
+5. The sidecar reports its actual runtime port to Tauri through a structured ready message.
+6. Tauri performs an authenticated backend health check before exposing the runtime connection descriptor.
+7. React uses the platform abstraction to call either native Tauri commands or the typed desktop backend endpoints.
 
 In development, the backend may run as a normal Node process outside packaged sidecar mode to preserve fast iteration.
 
@@ -62,9 +80,12 @@ In development, the backend may run as a normal Node process outside packaged si
 ## Operational Notes
 
 - the sidecar is loopback-only and never exposed as a network service beyond the local machine
+- loopback transport is authenticated per launch and does not rely on CORS as the primary protection
+- development CORS is limited to the exact configured Vite origin, while packaged builds allow only known Tauri origins
 - Tauri capabilities remain narrow and do not expose generic shell execution or unrestricted filesystem access to the renderer
 - SQLite migrations run inside the TypeScript database package before repositories are used
 - configuration writes are atomic and preserve the prior version through a backup file during replacement
+- configuration load attempts backup recovery when the primary file is missing or invalid
 
 ## Risks
 

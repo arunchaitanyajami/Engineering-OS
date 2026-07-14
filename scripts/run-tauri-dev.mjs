@@ -1,4 +1,5 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -41,6 +42,8 @@ const startTauriDev = async () => {
     process.env.EOS_DESKTOP_BACKEND_HOST ?? DEFAULT_BACKEND_HOST;
   const frontendPort = await resolveFreePort(frontendHost);
   const backendPort = await resolveFreePort(backendHost);
+  const backendAuthToken = randomBytes(32).toString("hex");
+  const allowedOrigin = `http://${frontendHost}:${frontendPort}`;
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "engineering-os-tauri-dev-")
   );
@@ -75,7 +78,9 @@ const startTauriDev = async () => {
         FRONTEND_HOST: frontendHost,
         FRONTEND_PORT: String(frontendPort),
         EOS_DESKTOP_BACKEND_HOST: backendHost,
-        EOS_DESKTOP_BACKEND_PORT: String(backendPort)
+        EOS_DESKTOP_BACKEND_PORT: String(backendPort),
+        EOS_DESKTOP_BACKEND_AUTH_TOKEN: backendAuthToken,
+        EOS_DESKTOP_ALLOWED_ORIGIN: allowedOrigin
       }
     }
   );

@@ -40,45 +40,52 @@ describe("TauriDesktopPlatform", () => {
 
   it("retries backend health checks during desktop startup races", async () => {
     vi.useFakeTimers();
-    invokeMock.mockResolvedValue("http://127.0.0.1:43110");
+    invokeMock.mockResolvedValue({
+      baseUrl: "http://127.0.0.1:43110",
+      authorizationToken: "test-token"
+    });
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       value: {},
       configurable: true
     });
 
     let backendAttempt = 0;
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
 
-      if (url === "http://127.0.0.1:7777/event") {
-        return new Response(null, { status: 202 });
-      }
+        backendAttempt += 1;
 
-      backendAttempt += 1;
-
-      if (backendAttempt === 1) {
-        throw new TypeError("Failed to fetch");
-      }
-
-      return new Response(
-        JSON.stringify({
-          database: {
-            ok: true,
-            status: "ready",
-            migrationVersion: 2,
-            databasePath: "/tmp/engineering-os.sqlite"
-          },
-          logFilePath: "/tmp/application.log",
-          configFilePath: "/tmp/application-config.json"
-        }),
-        {
-          status: 200,
-          headers: {
-            "content-type": "application/json"
-          }
+        if (backendAttempt === 1) {
+          throw new TypeError("Failed to fetch");
         }
-      );
-    });
+
+        expect(url).toBe("http://127.0.0.1:43110/health");
+        expect(init?.headers).toMatchObject({
+          authorization: "Bearer test-token",
+          "content-type": "application/json"
+        });
+
+        return new Response(
+          JSON.stringify({
+            database: {
+              ok: true,
+              status: "ready",
+              migrationVersion: 2,
+              databasePath: "/tmp/engineering-os.sqlite"
+            },
+            logFilePath: "/tmp/application.log",
+            configFilePath: "/tmp/application-config.json"
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json"
+            }
+          }
+        );
+      }
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const platform = new TauriDesktopPlatform();
@@ -94,6 +101,6 @@ describe("TauriDesktopPlatform", () => {
       }
     });
     expect(backendAttempt).toBe(2);
-    expect(invokeMock).toHaveBeenCalledWith("get_backend_base_url");
+    expect(invokeMock).toHaveBeenCalledWith("get_backend_connection");
   });
 });

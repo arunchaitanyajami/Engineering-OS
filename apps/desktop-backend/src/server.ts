@@ -5,7 +5,9 @@ import {
   type Server,
   type ServerResponse
 } from "node:http";
-import { join } from "node:path";
+import { timingSafeEqual } from "node:crypto";
+import type { Socket } from "node:net";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -28,8 +30,12 @@ const DATABASE_FILE_NAME = "engineering-os.sqlite";
 const LOG_DIRECTORY_NAME = "logs";
 const LOG_FILE_NAME = "application.log";
 const DEFAULT_HOST = "127.0.0.1";
-const DEFAULT_PORT = 43_110;
 const MAX_CONFIG_BYTES = 128 * 1024;
+const MAX_SESSION_BYTES = 16 * 1024;
+const MAX_LOG_ENTRY_BYTES = 64 * 1024;
+const MAX_JSON_PAYLOAD_BYTES = 256 * 1024;
+const SHUTDOWN_TIMEOUT_MS = 1_000;
+const READY_MESSAGE_PREFIX = "ENGINEERING_OS_BACKEND_READY ";
 const ALLOWED_TAURI_ORIGINS = new Set([
   "tauri://localhost",
   "http://tauri.localhost",
@@ -45,14 +51,19 @@ export interface BackendContext {
   readonly configFilePath: string;
   readonly databaseFilePath: string;
   readonly logFilePath: string;
+  readonly authToken: string;
+  readonly allowedOrigin: string | null;
   readonly database: ApplicationDatabase;
   readonly logger: ReturnType<typeof createLogger>;
+  flushLogs(): Promise<void>;
 }
 
 export interface StartDesktopBackendServerOptions {
   readonly appDataDirectory?: string;
   readonly host?: string;
   readonly port?: number;
+  readonly authToken?: string;
+  readonly allowedOrigin?: string | null;
 }
 
 export interface StartedDesktopBackendServer {
@@ -61,21 +72,47 @@ export interface StartedDesktopBackendServer {
   readonly host: string;
   readonly port: number;
   readonly baseUrl: string;
+  readonly authToken: string;
   close(): Promise<void>;
 }
 
 class FileLogTransport implements LogTransport {
+  private pendingWrite: Promise<void> = Promise.resolve();
+
   constructor(private readonly logFilePath: string) {}
 
   write(entry: LogEntry): void {
-    void appendJsonLine(this.logFilePath, {
+    const persistedEntry = {
       timestamp: entry.timestamp,
       level: entry.level,
       scope: entry.component,
       message: entry.message,
       ...(entry.metadata ? { context: entry.metadata } : {}),
       ...(entry.correlationId ? { correlationId: entry.correlationId } : {})
-    });
+    } satisfies PersistedLogEntry;
+
+    this.pendingWrite = this.pendingWrite
+      .catch(() => undefined)
+      .then(() => appendJsonLine(this.logFilePath, persistedEntry))
+      .catch((error) => {
+        console.error("Failed to append Engineering OS log entry.", error);
+      });
+  }
+
+  flush(): Promise<void> {
+    return this.pendingWrite;
+  }
+}
+
+class BackendPublicError extends Error {
+  constructor(
+    readonly code: string,
+    readonly publicMessage: string,
+    readonly statusCode: number,
+    options?: { readonly cause?: unknown }
+  ) {
+    super(publicMessage, options);
+    this.name = "BackendPublicError";
   }
 }
 
@@ -90,16 +127,33 @@ export const getBackendPort = (): number => {
   const candidate = process.env.EOS_DESKTOP_BACKEND_PORT?.trim();
 
   if (!candidate) {
-    return DEFAULT_PORT;
+    return 0;
   }
 
   const parsed = Number(candidate);
 
-  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65_535) {
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65_535) {
     throw new Error("EOS_DESKTOP_BACKEND_PORT must be a valid TCP port.");
   }
 
   return parsed;
+};
+
+export const getBackendAuthToken = (): string => {
+  const candidate = process.env.EOS_DESKTOP_BACKEND_AUTH_TOKEN?.trim();
+
+  if (!candidate) {
+    throw new Error(
+      "EOS_DESKTOP_BACKEND_AUTH_TOKEN must be set for the desktop backend."
+    );
+  }
+
+  return candidate;
+};
+
+export const getAllowedOrigin = (): string | null => {
+  const candidate = process.env.EOS_DESKTOP_ALLOWED_ORIGIN?.trim();
+  return candidate ? candidate : null;
 };
 
 const ensureDirectory = async (path: string) => {
@@ -123,34 +177,96 @@ const readOptionalFile = async (path: string): Promise<string | null> => {
   }
 };
 
-const atomicWriteFile = async (path: string, contents: string) => {
+const isMissingFileError = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  error.code === "ENOENT";
+
+const asPublicError = (
+  error: unknown,
+  fallbackCode = "BACKEND_REQUEST_FAILED",
+  fallbackMessage = "Desktop backend request failed.",
+  fallbackStatusCode = 500
+): BackendPublicError =>
+  error instanceof BackendPublicError
+    ? error
+    : new BackendPublicError(
+        fallbackCode,
+        fallbackMessage,
+        fallbackStatusCode,
+        {
+          cause: error
+        }
+      );
+
+const atomicWriteFile = async (
+  path: string,
+  contents: string,
+  logger: BackendContext["logger"]
+) => {
   const temporaryPath = `${path}.tmp`;
   const backupPath = `${path}.bak`;
+  let movedPrimaryToBackup = false;
 
   await writeFile(temporaryPath, contents, "utf8");
 
   try {
     await rm(backupPath, { force: true });
     await rename(path, backupPath);
+    movedPrimaryToBackup = true;
   } catch (error) {
-    if (
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      error.code !== "ENOENT"
-    ) {
+    if (!isMissingFileError(error)) {
+      await rm(temporaryPath, { force: true });
       throw error;
     }
   }
 
-  await rename(temporaryPath, path);
+  try {
+    await rename(temporaryPath, path);
+  } catch (error) {
+    let backupRestored = false;
+
+    if (movedPrimaryToBackup) {
+      try {
+        await rename(backupPath, path);
+        backupRestored = true;
+      } catch (restoreError) {
+        logger.error(
+          "Failed to restore configuration backup after write error.",
+          restoreError,
+          {
+            path,
+            backupPath
+          }
+        );
+      }
+    }
+
+    await rm(temporaryPath, { force: true });
+    logger.error(
+      "Failed to replace persisted configuration atomically.",
+      error,
+      {
+        path,
+        backupPath,
+        backupRestored
+      }
+    );
+    throw new BackendPublicError(
+      "CONFIG_WRITE_FAILED",
+      "Application configuration could not be saved.",
+      500,
+      { cause: error }
+    );
+  }
 };
 
 const appendJsonLine = async (
   path: string,
   value: PersistedLogEntry
 ): Promise<void> => {
-  await ensureDirectory(join(path, ".."));
+  await ensureDirectory(dirname(path));
   const serialized = `${JSON.stringify(value)}\n`;
   await writeFile(path, serialized, { encoding: "utf8", flag: "a" });
 };
@@ -174,27 +290,48 @@ const createLocalServicesStatus = (
 
 const validateSerializedConfig = (serializedConfig: string) => {
   if (serializedConfig.length > MAX_CONFIG_BYTES) {
-    throw new Error("Application configuration exceeds the allowed size.");
+    throw new BackendPublicError(
+      "CONFIG_TOO_LARGE",
+      "Application configuration exceeds the allowed size.",
+      413
+    );
   }
 
-  JSON.parse(serializedConfig);
+  try {
+    JSON.parse(serializedConfig);
+  } catch (error) {
+    throw new BackendPublicError(
+      "CONFIG_INVALID_JSON",
+      "Application configuration is not valid JSON.",
+      400,
+      { cause: error }
+    );
+  }
 };
 
 const validateSession = (session: EngineeringSession) => {
   if (!session.id.trim() || session.id.length > 128) {
-    throw new Error(
-      "Session id must be present and shorter than 128 characters."
+    throw new BackendPublicError(
+      "SESSION_INVALID",
+      "Session id must be present and shorter than 128 characters.",
+      400
     );
   }
 
   if (!session.title.trim() || session.title.length > 200) {
-    throw new Error(
-      "Session title must be present and shorter than 200 characters."
+    throw new BackendPublicError(
+      "SESSION_INVALID",
+      "Session title must be present and shorter than 200 characters.",
+      400
     );
   }
 
   if (session.status !== "active" && session.status !== "archived") {
-    throw new Error("Session status must be active or archived.");
+    throw new BackendPublicError(
+      "SESSION_INVALID",
+      "Session status must be active or archived.",
+      400
+    );
   }
 };
 
@@ -202,43 +339,75 @@ const validateLogEntry = (entry: PersistedLogEntry) => {
   const validLevels = ["trace", "debug", "info", "warn", "error"];
 
   if (!validLevels.includes(entry.level)) {
-    throw new Error("Log level is not supported.");
+    throw new BackendPublicError(
+      "LOG_ENTRY_INVALID",
+      "Log level is not supported.",
+      400
+    );
   }
 
   if (!entry.scope.trim() || !entry.message.trim()) {
-    throw new Error("Log scope and message are required.");
+    throw new BackendPublicError(
+      "LOG_ENTRY_INVALID",
+      "Log scope and message are required.",
+      400
+    );
   }
 };
 
-const readJsonBody = async <T>(request: IncomingMessage): Promise<T> => {
+const readJsonBody = async <T>(
+  request: IncomingMessage,
+  maxBytes: number
+): Promise<T> => {
+  const contentLength = request.headers["content-length"];
+
+  if (typeof contentLength === "string") {
+    const parsedLength = Number(contentLength);
+
+    if (Number.isFinite(parsedLength) && parsedLength > maxBytes) {
+      throw new BackendPublicError(
+        "REQUEST_PAYLOAD_TOO_LARGE",
+        "Request payload exceeds the allowed size.",
+        413
+      );
+    }
+  }
+
   const chunks: Uint8Array[] = [];
+  let receivedBytes = 0;
 
   for await (const chunk of request) {
-    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+    const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+    receivedBytes += buffer.length;
+
+    if (receivedBytes > Math.min(maxBytes, MAX_JSON_PAYLOAD_BYTES)) {
+      throw new BackendPublicError(
+        "REQUEST_PAYLOAD_TOO_LARGE",
+        "Request payload exceeds the allowed size.",
+        413
+      );
+    }
+
+    chunks.push(buffer);
   }
 
   const serializedBody = Buffer.concat(chunks).toString("utf8");
 
-  return JSON.parse(serializedBody) as T;
-};
-
-const isLoopbackOrigin = (origin: string): boolean => {
   try {
-    const url = new URL(origin);
-    return (
-      url.protocol === "http:" &&
-      (url.hostname === "127.0.0.1" ||
-        url.hostname === "localhost" ||
-        url.hostname === "[::1]" ||
-        url.hostname === "::1")
+    return JSON.parse(serializedBody) as T;
+  } catch (error) {
+    throw new BackendPublicError(
+      "REQUEST_INVALID_JSON",
+      "Request body must be valid JSON.",
+      400,
+      { cause: error }
     );
-  } catch {
-    return false;
   }
 };
 
 const resolveAllowedOrigin = (
-  request: Pick<IncomingMessage, "headers">
+  request: Pick<IncomingMessage, "headers">,
+  context: Pick<BackendContext, "allowedOrigin">
 ): string | null => {
   const origin = request.headers.origin;
 
@@ -246,7 +415,7 @@ const resolveAllowedOrigin = (
     return null;
   }
 
-  if (isLoopbackOrigin(origin) || ALLOWED_TAURI_ORIGINS.has(origin)) {
+  if (ALLOWED_TAURI_ORIGINS.has(origin) || context.allowedOrigin === origin) {
     return origin;
   }
 
@@ -255,9 +424,10 @@ const resolveAllowedOrigin = (
 
 const applyCorsHeaders = (
   response: ServerResponse,
-  request: Pick<IncomingMessage, "headers">
+  request: Pick<IncomingMessage, "headers">,
+  context: Pick<BackendContext, "allowedOrigin">
 ) => {
-  const allowedOrigin = resolveAllowedOrigin(request);
+  const allowedOrigin = resolveAllowedOrigin(request, context);
 
   if (!allowedOrigin) {
     return;
@@ -265,7 +435,10 @@ const applyCorsHeaders = (
 
   response.setHeader("access-control-allow-origin", allowedOrigin);
   response.setHeader("access-control-allow-methods", "GET,POST,PUT,OPTIONS");
-  response.setHeader("access-control-allow-headers", "content-type");
+  response.setHeader(
+    "access-control-allow-headers",
+    "authorization, content-type"
+  );
   response.setHeader("vary", "origin");
 };
 
@@ -283,11 +456,9 @@ const writeJson = (
 const writeError = (
   response: ServerResponse,
   code: string,
-  error: unknown,
-  statusCode = 500
+  message: string,
+  statusCode: number
 ) => {
-  const message =
-    error instanceof Error ? error.message : "Unknown backend error.";
   writeJson(
     response,
     {
@@ -298,19 +469,129 @@ const writeError = (
   );
 };
 
+const writePublicError = (response: ServerResponse, error: unknown) => {
+  const publicError = asPublicError(error);
+  writeError(
+    response,
+    publicError.code,
+    publicError.publicMessage,
+    publicError.statusCode
+  );
+};
+
+const constantTimeEquals = (left: string, right: string): boolean => {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+
+  return timingSafeEqual(leftBuffer, rightBuffer);
+};
+
+const validateAuthorization = (
+  request: Pick<IncomingMessage, "headers">,
+  authToken: string
+) => {
+  const authorizationHeader = request.headers.authorization;
+
+  if (typeof authorizationHeader !== "string") {
+    throw new BackendPublicError(
+      "BACKEND_AUTH_REQUIRED",
+      "Desktop backend authentication is required.",
+      401
+    );
+  }
+
+  const [scheme, token] = authorizationHeader.split(" ");
+
+  if (
+    scheme !== "Bearer" ||
+    typeof token !== "string" ||
+    !constantTimeEquals(token, authToken)
+  ) {
+    throw new BackendPublicError(
+      "BACKEND_AUTH_INVALID",
+      "Desktop backend authentication is invalid.",
+      401
+    );
+  }
+};
+
+const loadPersistedConfig = async (
+  context: Pick<BackendContext, "configFilePath" | "logger">
+): Promise<string | null> => {
+  const backupPath = `${context.configFilePath}.bak`;
+  const primaryConfig = await readOptionalFile(context.configFilePath);
+
+  if (primaryConfig !== null) {
+    try {
+      validateSerializedConfig(primaryConfig);
+      return primaryConfig;
+    } catch (error) {
+      context.logger.warn(
+        "Primary application configuration is invalid. Attempting backup recovery.",
+        {
+          configFilePath: context.configFilePath,
+          backupPath
+        }
+      );
+      const backupConfig = await readOptionalFile(backupPath);
+
+      if (backupConfig === null) {
+        throw new BackendPublicError(
+          "CONFIG_READ_FAILED",
+          "Application configuration could not be loaded.",
+          500,
+          { cause: error }
+        );
+      }
+
+      validateSerializedConfig(backupConfig);
+      await writeFile(context.configFilePath, backupConfig, "utf8");
+      context.logger.warn("Recovered application configuration from backup.", {
+        configFilePath: context.configFilePath,
+        backupPath
+      });
+      return backupConfig;
+    }
+  }
+
+  const backupConfig = await readOptionalFile(backupPath);
+
+  if (backupConfig === null) {
+    return null;
+  }
+
+  validateSerializedConfig(backupConfig);
+  await writeFile(context.configFilePath, backupConfig, "utf8");
+  context.logger.warn(
+    "Restored missing application configuration from backup.",
+    {
+      configFilePath: context.configFilePath,
+      backupPath
+    }
+  );
+  return backupConfig;
+};
+
 export const createBackendContext = async (
-  appDataDirectory = getAppDataDirectory()
+  appDataDirectory = getAppDataDirectory(),
+  authToken = getBackendAuthToken(),
+  allowedOrigin = getAllowedOrigin()
 ): Promise<BackendContext> => {
   const configFilePath = join(appDataDirectory, CONFIG_FILE_NAME);
   const databaseFilePath = join(appDataDirectory, DATABASE_FILE_NAME);
   const logFilePath = join(appDataDirectory, LOG_DIRECTORY_NAME, LOG_FILE_NAME);
+  const fileLogTransport = new FileLogTransport(logFilePath);
 
   await ensureDirectory(appDataDirectory);
   await ensureDirectory(join(appDataDirectory, LOG_DIRECTORY_NAME));
 
   const logger = createLogger({
     component: "desktop-backend",
-    transport: new FileLogTransport(logFilePath)
+    transport: fileLogTransport
   });
   const database = new ApplicationDatabase(databaseFilePath, logger);
   database.runMigrations();
@@ -321,15 +602,18 @@ export const createBackendContext = async (
     configFilePath,
     databaseFilePath,
     logFilePath,
+    authToken,
+    allowedOrigin,
     database,
-    logger
+    logger,
+    flushLogs: () => fileLogTransport.flush()
   };
 };
 
 export const createDesktopBackendHandler =
   (context: BackendContext) =>
   async (request: IncomingMessage, response: ServerResponse) => {
-    applyCorsHeaders(response, request);
+    applyCorsHeaders(response, request, context);
 
     if (!request.url || !request.method) {
       writeError(
@@ -348,6 +632,8 @@ export const createDesktopBackendHandler =
     }
 
     try {
+      validateAuthorization(request, context.authToken);
+
       if (request.method === "GET" && request.url === "/health") {
         writeJson(
           response,
@@ -358,7 +644,7 @@ export const createDesktopBackendHandler =
 
       if (request.method === "GET" && request.url === "/config") {
         writeJson(response, {
-          serializedConfig: await readOptionalFile(context.configFilePath)
+          serializedConfig: await loadPersistedConfig(context)
         });
         return;
       }
@@ -366,10 +652,14 @@ export const createDesktopBackendHandler =
       if (request.method === "PUT" && request.url === "/config") {
         const { serializedConfig } = await readJsonBody<{
           readonly serializedConfig: string;
-        }>(request);
+        }>(request, MAX_CONFIG_BYTES);
 
         validateSerializedConfig(serializedConfig);
-        await atomicWriteFile(context.configFilePath, serializedConfig);
+        await atomicWriteFile(
+          context.configFilePath,
+          serializedConfig,
+          context.logger
+        );
         writeJson(response, { ok: true });
         return;
       }
@@ -382,7 +672,7 @@ export const createDesktopBackendHandler =
       if (request.method === "POST" && request.url === "/sessions") {
         const { session } = await readJsonBody<{
           readonly session: EngineeringSession;
-        }>(request);
+        }>(request, MAX_SESSION_BYTES);
 
         validateSession(session);
         writeJson(response, {
@@ -394,7 +684,7 @@ export const createDesktopBackendHandler =
       if (request.method === "POST" && request.url === "/logs") {
         const { entry } = await readJsonBody<{
           readonly entry: PersistedLogEntry;
-        }>(request);
+        }>(request, MAX_LOG_ENTRY_BYTES);
 
         validateLogEntry(entry);
         await appendJsonLine(context.logFilePath, entry);
@@ -404,11 +694,18 @@ export const createDesktopBackendHandler =
 
       writeError(response, "BACKEND_ROUTE_NOT_FOUND", "Route not found.", 404);
     } catch (error) {
-      context.logger.error("Desktop backend request failed.", error, {
-        method: request.method,
-        path: request.url
-      });
-      writeError(response, "BACKEND_REQUEST_FAILED", error);
+      const publicError = asPublicError(error);
+      context.logger.error(
+        "Desktop backend request failed.",
+        publicError.cause ?? publicError,
+        {
+          method: request.method,
+          path: request.url,
+          code: publicError.code,
+          statusCode: publicError.statusCode
+        }
+      );
+      writePublicError(response, publicError);
     }
   };
 
@@ -425,9 +722,19 @@ const listen = async (
     });
   });
 
-const closeServer = async (server: Server): Promise<void> =>
+const closeServer = async (
+  server: Server,
+  sockets: Set<Socket>
+): Promise<void> =>
   new Promise((resolve, reject) => {
+    const timeout = globalThis.setTimeout(() => {
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+    }, SHUTDOWN_TIMEOUT_MS);
+
     server.close((error) => {
+      globalThis.clearTimeout(timeout);
       if (error) {
         reject(error);
         return;
@@ -440,10 +747,22 @@ const closeServer = async (server: Server): Promise<void> =>
 export const startDesktopBackendServer = async (
   options: StartDesktopBackendServerOptions = {}
 ): Promise<StartedDesktopBackendServer> => {
-  const context = await createBackendContext(options.appDataDirectory);
+  const context = await createBackendContext(
+    options.appDataDirectory,
+    options.authToken,
+    options.allowedOrigin
+  );
   const host = options.host ?? getBackendHost();
   const port = options.port ?? getBackendPort();
   const server = createServer(createDesktopBackendHandler(context));
+  const sockets = new Set<Socket>();
+
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => {
+      sockets.delete(socket);
+    });
+  });
 
   await listen(server, port, host);
 
@@ -460,8 +779,10 @@ export const startDesktopBackendServer = async (
     host: address.address,
     port: address.port,
     baseUrl: `http://${address.address}:${address.port}`,
+    authToken: context.authToken,
     async close() {
-      await closeServer(server);
+      await context.flushLogs();
+      await closeServer(server, sockets);
       context.database.close();
     }
   };
@@ -472,7 +793,12 @@ export const startDesktopBackendServer = async (
     appDataDirectory: context.appDataDirectory
   });
 
-  console.log(`Engineering OS desktop backend ready on ${runtime.baseUrl}`);
+  console.log(
+    `${READY_MESSAGE_PREFIX}${JSON.stringify({
+      host: runtime.host,
+      port: runtime.port
+    })}`
+  );
 
   return runtime;
 };

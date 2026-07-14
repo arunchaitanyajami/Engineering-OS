@@ -22,7 +22,7 @@ fn main() {
             commands::app_info::get_app_version,
             commands::app_info::get_platform_info,
             commands::paths::get_application_data_directory,
-            commands::paths::get_backend_base_url,
+            commands::paths::get_backend_connection,
             commands::external_url::open_external_url
         ])
         .build(tauri::generate_context!())

@@ -17,11 +17,16 @@ interface TauriPlatformInfoResponse {
   readonly isDevelopment: boolean;
 }
 
+interface TauriBackendConnectionResponse {
+  readonly baseUrl: string;
+  readonly authorizationToken: string;
+}
+
 const BROWSER_CONFIG_KEY = "engineering-os.application-config";
 const BROWSER_SESSION_KEY = "engineering-os.sessions";
 const BACKEND_RETRY_ATTEMPTS = 10;
 const BACKEND_RETRY_DELAY_MS = 150;
-let cachedBackendBaseUrl: string | null = null;
+let cachedBackendConnection: TauriBackendConnectionResponse | null = null;
 
 const isTauriEnvironment = (): boolean =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -57,14 +62,17 @@ const createBrowserFallbackInfo = (): PlatformInfo => ({
   isTauri: false
 });
 
-const resolveBackendBaseUrl = async (): Promise<string> => {
-  if (cachedBackendBaseUrl) {
-    return cachedBackendBaseUrl;
-  }
+const resolveBackendConnection =
+  async (): Promise<TauriBackendConnectionResponse> => {
+    if (cachedBackendConnection) {
+      return cachedBackendConnection;
+    }
 
-  cachedBackendBaseUrl = await invoke<string>("get_backend_base_url");
-  return cachedBackendBaseUrl;
-};
+    cachedBackendConnection = await invoke<TauriBackendConnectionResponse>(
+      "get_backend_connection"
+    );
+    return cachedBackendConnection;
+  };
 
 const parseBackendError = async (response: Response): Promise<Error> => {
   try {
@@ -98,13 +106,14 @@ const requestDesktopBackend = async <T>(
   path: string,
   init?: RequestInit
 ): Promise<T> => {
-  const baseUrl = await resolveBackendBaseUrl();
+  const connection = await resolveBackendConnection();
 
   for (let attempt = 1; attempt <= BACKEND_RETRY_ATTEMPTS; attempt += 1) {
     try {
-      const response = await fetch(`${baseUrl}${path}`, {
+      const response = await fetch(`${connection.baseUrl}${path}`, {
         ...init,
         headers: {
+          authorization: `Bearer ${connection.authorizationToken}`,
           "content-type": "application/json",
           ...(init?.headers ?? {})
         }

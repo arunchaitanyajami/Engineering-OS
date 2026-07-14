@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,8 +11,28 @@ import {
 } from "../src/server.js";
 
 describe("desktop backend server", () => {
+  const allowedOrigin = "http://127.0.0.1:1420";
   let appDataDirectory: string;
   let runtime: StartedDesktopBackendServer | null = null;
+
+  const startRuntime = async () => {
+    runtime = await startDesktopBackendServer({
+      appDataDirectory,
+      host: "127.0.0.1",
+      port: 0,
+      authToken: "integration-test-token",
+      allowedOrigin
+    });
+
+    return runtime;
+  };
+
+  const authenticatedHeaders = (
+    additionalHeaders: Record<string, string> = {}
+  ) => ({
+    authorization: `Bearer ${runtime?.authToken ?? "integration-test-token"}`,
+    ...additionalHeaders
+  });
 
   beforeEach(async () => {
     appDataDirectory = await mkdtemp(join(tmpdir(), "engineering-os-backend-"));
@@ -28,13 +48,11 @@ describe("desktop backend server", () => {
   });
 
   it("initializes local services through the native backend runtime", async () => {
-    runtime = await startDesktopBackendServer({
-      appDataDirectory,
-      host: "127.0.0.1",
-      port: 0
-    });
+    runtime = await startRuntime();
 
-    const response = await fetch(`${runtime.baseUrl}/health`);
+    const response = await fetch(`${runtime.baseUrl}/health`, {
+      headers: authenticatedHeaders()
+    });
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
@@ -50,11 +68,7 @@ describe("desktop backend server", () => {
   });
 
   it("persists configuration updates atomically and preserves the prior version", async () => {
-    runtime = await startDesktopBackendServer({
-      appDataDirectory,
-      host: "127.0.0.1",
-      port: 0
-    });
+    runtime = await startRuntime();
 
     const originalConfig = JSON.stringify({
       schemaVersion: 1,
@@ -81,20 +95,22 @@ describe("desktop backend server", () => {
 
     await fetch(`${runtime.baseUrl}/config`, {
       method: "PUT",
-      headers: {
+      headers: authenticatedHeaders({
         "content-type": "application/json"
-      },
+      }),
       body: JSON.stringify({ serializedConfig: originalConfig })
     });
     await fetch(`${runtime.baseUrl}/config`, {
       method: "PUT",
-      headers: {
+      headers: authenticatedHeaders({
         "content-type": "application/json"
-      },
+      }),
       body: JSON.stringify({ serializedConfig: updatedConfig })
     });
 
-    const response = await fetch(`${runtime.baseUrl}/config`);
+    const response = await fetch(`${runtime.baseUrl}/config`, {
+      headers: authenticatedHeaders()
+    });
     const body = (await response.json()) as {
       readonly serializedConfig: string | null;
     };
@@ -109,11 +125,7 @@ describe("desktop backend server", () => {
   });
 
   it("round-trips sessions through the SQLite-backed HTTP contract", async () => {
-    runtime = await startDesktopBackendServer({
-      appDataDirectory,
-      host: "127.0.0.1",
-      port: 0
-    });
+    runtime = await startRuntime();
 
     const session = {
       id: "session-1",
@@ -125,16 +137,18 @@ describe("desktop backend server", () => {
 
     const createResponse = await fetch(`${runtime.baseUrl}/sessions`, {
       method: "POST",
-      headers: {
+      headers: authenticatedHeaders({
         "content-type": "application/json"
-      },
+      }),
       body: JSON.stringify({ session })
     });
 
     expect(createResponse.status).toBe(200);
     await expect(createResponse.json()).resolves.toEqual({ session });
 
-    const listResponse = await fetch(`${runtime.baseUrl}/sessions`);
+    const listResponse = await fetch(`${runtime.baseUrl}/sessions`, {
+      headers: authenticatedHeaders()
+    });
 
     expect(listResponse.status).toBe(200);
     await expect(listResponse.json()).resolves.toEqual({
@@ -143,11 +157,7 @@ describe("desktop backend server", () => {
   });
 
   it("writes persisted log entries to the local log file", async () => {
-    runtime = await startDesktopBackendServer({
-      appDataDirectory,
-      host: "127.0.0.1",
-      port: 0
-    });
+    runtime = await startRuntime();
 
     const entry = {
       timestamp: "2026-07-14T00:00:00.000Z",
@@ -161,9 +171,9 @@ describe("desktop backend server", () => {
 
     const response = await fetch(`${runtime.baseUrl}/logs`, {
       method: "POST",
-      headers: {
+      headers: authenticatedHeaders({
         "content-type": "application/json"
-      },
+      }),
       body: JSON.stringify({ entry })
     });
 
@@ -174,22 +184,31 @@ describe("desktop backend server", () => {
     ).resolves.toContain('"scope":"desktop-shell"');
   });
 
-  it("allows loopback browser origins to call the desktop backend", async () => {
-    runtime = await startDesktopBackendServer({
-      appDataDirectory,
-      host: "127.0.0.1",
-      port: 0
+  it("requires authentication for desktop backend routes", async () => {
+    runtime = await startRuntime();
+
+    const response = await fetch(`${runtime.baseUrl}/health`);
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({
+      code: "BACKEND_AUTH_REQUIRED",
+      message: "Desktop backend authentication is required."
     });
+  });
+
+  it("allows only the configured development origin to call the desktop backend", async () => {
+    runtime = await startRuntime();
 
     const response = await fetch(`${runtime.baseUrl}/health`, {
       headers: {
-        origin: "http://127.0.0.1:1420"
+        ...authenticatedHeaders(),
+        origin: allowedOrigin
       }
     });
 
     expect(response.status).toBe(200);
     expect(response.headers.get("access-control-allow-origin")).toBe(
-      "http://127.0.0.1:1420"
+      allowedOrigin
     );
     expect(response.headers.get("access-control-allow-methods")).toContain(
       "OPTIONS"
@@ -197,32 +216,135 @@ describe("desktop backend server", () => {
   });
 
   it("answers CORS preflight requests for allowed desktop origins", async () => {
-    runtime = await startDesktopBackendServer({
-      appDataDirectory,
-      host: "127.0.0.1",
-      port: 0
-    });
+    runtime = await startRuntime();
 
     const response = await fetch(`${runtime.baseUrl}/config`, {
       method: "OPTIONS",
       headers: {
-        origin: "http://127.0.0.1:1420",
+        origin: allowedOrigin,
         "access-control-request-method": "PUT",
-        "access-control-request-headers": "content-type"
+        "access-control-request-headers": "authorization, content-type"
       }
     });
 
     expect(response.status).toBe(204);
     expect(response.headers.get("access-control-allow-origin")).toBe(
-      "http://127.0.0.1:1420"
+      allowedOrigin
     );
     expect(response.headers.get("access-control-allow-headers")).toBe(
-      "content-type"
+      "authorization, content-type"
     );
   });
 
+  it("enforces request size limits while streaming JSON bodies", async () => {
+    runtime = await startRuntime();
+
+    const oversizedConfig = JSON.stringify({
+      serializedConfig: JSON.stringify({
+        schemaVersion: 1,
+        settings: {
+          theme: "dark",
+          telemetryEnabled: false,
+          autoUpdateEnabled: true,
+          minimizeToTray: false,
+          launchOnStartup: false,
+          developerMode: false,
+          notes: "x".repeat(128 * 1024)
+        }
+      })
+    });
+
+    const response = await fetch(`${runtime.baseUrl}/config`, {
+      method: "PUT",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: oversizedConfig
+    });
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toEqual({
+      code: "REQUEST_PAYLOAD_TOO_LARGE",
+      message: "Request payload exceeds the allowed size."
+    });
+  });
+
+  it("recovers persisted configuration from a valid backup when the primary file is invalid", async () => {
+    runtime = await startRuntime();
+
+    const backupConfig = JSON.stringify({
+      schemaVersion: 1,
+      settings: {
+        theme: "dark",
+        telemetryEnabled: false,
+        autoUpdateEnabled: true,
+        minimizeToTray: false,
+        launchOnStartup: false,
+        developerMode: true
+      }
+    });
+
+    await writeFile(runtime.context.configFilePath, "{invalid", "utf8");
+    await writeFile(
+      `${runtime.context.configFilePath}.bak`,
+      backupConfig,
+      "utf8"
+    );
+
+    const response = await fetch(`${runtime.baseUrl}/config`, {
+      headers: authenticatedHeaders()
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      serializedConfig: backupConfig
+    });
+    await expect(
+      readFile(runtime.context.configFilePath, "utf8")
+    ).resolves.toBe(backupConfig);
+  });
+
+  it("restores the primary configuration when only the backup file exists", async () => {
+    runtime = await startRuntime();
+
+    const backupConfig = JSON.stringify({
+      schemaVersion: 1,
+      settings: {
+        theme: "light",
+        telemetryEnabled: false,
+        autoUpdateEnabled: true,
+        minimizeToTray: false,
+        launchOnStartup: false,
+        developerMode: false
+      }
+    });
+
+    await unlink(runtime.context.configFilePath).catch(() => undefined);
+    await writeFile(
+      `${runtime.context.configFilePath}.bak`,
+      backupConfig,
+      "utf8"
+    );
+
+    const response = await fetch(`${runtime.baseUrl}/config`, {
+      headers: authenticatedHeaders()
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      serializedConfig: backupConfig
+    });
+    await expect(
+      readFile(runtime.context.configFilePath, "utf8")
+    ).resolves.toBe(backupConfig);
+  });
+
   it("runs migrations before exposing the backend context", async () => {
-    const context = await createBackendContext(appDataDirectory);
+    const context = await createBackendContext(
+      appDataDirectory,
+      "integration-test-token",
+      allowedOrigin
+    );
 
     expect(context.database.getHealth()).toMatchObject({
       ok: true,

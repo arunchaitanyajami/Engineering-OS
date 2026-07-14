@@ -5,7 +5,7 @@ export type {
 export {
   permissionScope as permission,
   permissionScopeSchema,
-  pluginPermissionRequestSchema as permissionRequestSchema,
+  pluginPermissionRequestSchema as permissionRequestSchema
 } from "@engineering-os/contracts";
 export type {
   AuditEvent,

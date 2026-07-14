@@ -94,7 +94,10 @@ const parsePluginManifest = (
   }
 };
 
-const assertPathWithinPackage = (packagePath: string, candidatePath: string) => {
+const assertPathWithinPackage = (
+  packagePath: string,
+  candidatePath: string
+) => {
   const relativePath = relative(packagePath, candidatePath);
 
   if (
@@ -361,7 +364,10 @@ export class PluginRegistryService {
       await resolveLocalPluginPackageSource(localPackagePath)
     );
 
-    validateCompatibleVersion(this.engineeringOsVersion, inspectedPackage.manifest);
+    validateCompatibleVersion(
+      this.engineeringOsVersion,
+      inspectedPackage.manifest
+    );
     return inspectedPackage;
   }
 
@@ -406,7 +412,8 @@ export class PluginRegistryService {
     pluginId: string,
     operation: () => Promise<T>
   ): Promise<T> {
-    const activeLock = this.installationLocks.get(pluginId) ?? Promise.resolve();
+    const activeLock =
+      this.installationLocks.get(pluginId) ?? Promise.resolve();
     let releaseLock: () => void = () => undefined;
     const queuedLock = activeLock.then(
       () =>
@@ -432,7 +439,8 @@ export class PluginRegistryService {
   async registerLocalPluginPackage(
     localPackagePath: string
   ): Promise<InstalledPlugin> {
-    const inspectedPackage = await this.inspectLocalPluginPackage(localPackagePath);
+    const inspectedPackage =
+      await this.inspectLocalPluginPackage(localPackagePath);
     return this.runWithInstallationLock(
       inspectedPackage.manifest.id,
       async () => {
@@ -533,14 +541,18 @@ export class PluginRegistryService {
 
             return installedPlugin;
           } catch (error) {
-            this.options.repository.deleteByPluginId(inspectedPackage.manifest.id);
+            this.options.repository.deleteByPluginId(
+              inspectedPackage.manifest.id
+            );
             await rm(installationRootPath, { recursive: true, force: true });
             throw error;
           }
         } catch (error) {
           if (finalPathCreated) {
             await rm(installationRootPath, { recursive: true, force: true });
-            this.options.repository.deleteByPluginId(inspectedPackage.manifest.id);
+            this.options.repository.deleteByPluginId(
+              inspectedPackage.manifest.id
+            );
           } else {
             await rm(stagingRootPath, { recursive: true, force: true });
           }

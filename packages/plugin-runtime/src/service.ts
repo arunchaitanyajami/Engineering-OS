@@ -83,7 +83,12 @@ export interface PluginRuntimeServiceOptions {
   readonly restartWindowMs?: number;
   readonly maxRestartsPerWindow?: number;
   readonly restartBackoffMs?: number;
-  readonly onBeforeRuntimeSpawn?: (plugin: InstalledPlugin) => Promise<void> | void;
+  readonly onBeforeRuntimeSpawn?: (
+    plugin: InstalledPlugin
+  ) => Promise<void> | void;
+  readonly onBeforeRestartLifecycleAcquire?: (
+    pluginId: string
+  ) => Promise<void> | void;
 }
 
 export class PluginRuntimeError extends Error {
@@ -124,8 +129,12 @@ export class PluginRuntimeService {
   private readonly crashHistory = new Map<string, number[]>();
   private readonly lifecycleLocks = new Map<string, Promise<void>>();
   private readonly desiredStates = new Map<string, DesiredRuntimeState>();
-  private readonly restartTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly restartTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
   private readonly generations = new Map<string, number>();
+  private disposing = false;
   private readonly requestTimeoutMs: number;
   private readonly startupTimeoutMs: number;
   private readonly shutdownGracePeriodMs: number;
@@ -143,8 +152,7 @@ export class PluginRuntimeService {
       options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
     this.shutdownGracePeriodMs =
       options.shutdownGracePeriodMs ?? DEFAULT_SHUTDOWN_GRACE_PERIOD_MS;
-    this.restartWindowMs =
-      options.restartWindowMs ?? DEFAULT_RESTART_WINDOW_MS;
+    this.restartWindowMs = options.restartWindowMs ?? DEFAULT_RESTART_WINDOW_MS;
     this.maxRestartsPerWindow =
       options.maxRestartsPerWindow ?? DEFAULT_MAX_RESTARTS_PER_WINDOW;
     this.restartBackoffMs =
@@ -192,7 +200,10 @@ export class PluginRuntimeService {
   }
 
   async startPlugin(pluginId: string): Promise<PluginRuntimeHealthSnapshot> {
+    this.throwIfDisposing();
     return this.runWithLifecycleLock(pluginId, async () => {
+      this.throwIfDisposing();
+
       if (this.runtimes.has(pluginId)) {
         throw new PluginRuntimeError(
           "PLUGIN_RUNTIME_ALREADY_RUNNING",
@@ -204,7 +215,20 @@ export class PluginRuntimeService {
       this.setDesiredState(pluginId, "running");
       this.clearRestartTimer(pluginId);
       const generation = this.advanceGeneration(pluginId);
-      return this.startPluginInternal(pluginId, generation);
+
+      try {
+        return await this.startPluginInternal(pluginId, generation);
+      } catch (error) {
+        if (
+          !this.runtimes.has(pluginId) &&
+          !this.restartTimers.has(pluginId) &&
+          this.getGeneration(pluginId) === generation
+        ) {
+          this.setDesiredState(pluginId, "stopped");
+        }
+
+        throw error;
+      }
     });
   }
 
@@ -229,17 +253,42 @@ export class PluginRuntimeService {
   }
 
   async dispose(): Promise<void> {
-    const pluginIds = new Set<string>([
-      ...this.runtimes.keys(),
-      ...this.restartTimers.keys()
-    ]);
+    this.disposing = true;
+    const pluginIds = this.getKnownPluginIds();
+
+    for (const pluginId of pluginIds) {
+      this.setDesiredState(pluginId, "stopped");
+      this.advanceGeneration(pluginId);
+      this.clearRestartTimer(pluginId);
+    }
 
     await Promise.all(
       [...pluginIds].map((pluginId) =>
-        this.stopPlugin(pluginId).catch((error) => {
-          this.logger.error("Failed to stop plugin runtime during disposal.", error, {
-            pluginId
-          });
+        this.runWithLifecycleLock(pluginId, async () => {
+          this.setDesiredState(pluginId, "stopped");
+          this.advanceGeneration(pluginId);
+          this.clearRestartTimer(pluginId);
+
+          const runtime = this.runtimes.get(pluginId);
+
+          if (!runtime) {
+            this.updateSnapshot(pluginId, {
+              status: "stopped",
+              healthy: false,
+              restartCount: this.getRestartCount(pluginId)
+            });
+            return;
+          }
+
+          await this.stopManagedRuntime(runtime);
+        }).catch((error) => {
+          this.logger.error(
+            "Failed to stop plugin runtime during disposal.",
+            error,
+            {
+              pluginId
+            }
+          );
         })
       )
     );
@@ -249,6 +298,8 @@ export class PluginRuntimeService {
     pluginId: string,
     generation: number
   ): Promise<PluginRuntimeHealthSnapshot> {
+    this.throwIfDisposing();
+
     if (this.getDesiredState(pluginId) !== "running") {
       return this.getRuntimeHealth(pluginId);
     }
@@ -268,6 +319,7 @@ export class PluginRuntimeService {
     const installedPlugin = this.requireRunnableInstalledPlugin(pluginId);
     await this.verifyManagedInstallation(installedPlugin);
     await this.options.onBeforeRuntimeSpawn?.(installedPlugin);
+    this.throwIfDisposing();
 
     if (this.getDesiredState(pluginId) !== "running") {
       return this.getRuntimeHealth(pluginId);
@@ -276,6 +328,8 @@ export class PluginRuntimeService {
     if (this.getGeneration(pluginId) !== generation) {
       return this.getRuntimeHealth(pluginId);
     }
+
+    this.throwIfDisposing();
 
     const runtime = this.createManagedRuntime(pluginId, generation);
     this.runtimes.set(pluginId, runtime);
@@ -363,9 +417,13 @@ export class PluginRuntimeService {
         this.shutdownGracePeriodMs
       );
     } catch (error) {
-      runtime.logger.warn("Plugin runtime did not acknowledge shutdown request.", {
-        code: error instanceof PluginRuntimeError ? error.code : "UNKNOWN_ERROR"
-      });
+      runtime.logger.warn(
+        "Plugin runtime did not acknowledge shutdown request.",
+        {
+          code:
+            error instanceof PluginRuntimeError ? error.code : "UNKNOWN_ERROR"
+        }
+      );
     }
 
     const exitedDuringShutdown = await this.waitForChildExit(
@@ -390,9 +448,13 @@ export class PluginRuntimeService {
       (await this.waitForChildExit(runtime, this.shutdownGracePeriodMs));
 
     if (!exitedAfterSigkill) {
-      runtime.logger.error("Plugin runtime did not exit after SIGKILL.", undefined, {
-        pluginId: runtime.pluginId
-      });
+      runtime.logger.error(
+        "Plugin runtime did not exit after SIGKILL.",
+        undefined,
+        {
+          pluginId: runtime.pluginId
+        }
+      );
       this.runtimes.delete(runtime.pluginId);
       return this.updateSnapshot(runtime.pluginId, {
         status: "failed",
@@ -411,7 +473,8 @@ export class PluginRuntimeService {
   }
 
   private requireRunnableInstalledPlugin(pluginId: string): InstalledPlugin {
-    const installedPlugin = this.options.pluginResolver.getInstalledPlugin(pluginId);
+    const installedPlugin =
+      this.options.pluginResolver.getInstalledPlugin(pluginId);
 
     if (!installedPlugin) {
       throw new PluginRuntimeError(
@@ -601,7 +664,8 @@ export class PluginRuntimeService {
     code: number | null,
     signal: NodeJS.Signals | null
   ) {
-    const reason = code === null ? `signal ${signal ?? "unknown"}` : `code ${code}`;
+    const reason =
+      code === null ? `signal ${signal ?? "unknown"}` : `code ${code}`;
 
     for (const pending of runtime.pendingResponses.values()) {
       clearTimeout(pending.timeout);
@@ -615,7 +679,10 @@ export class PluginRuntimeService {
 
     runtime.pendingResponses.clear();
 
-    if (runtime.expectedExit && this.getDesiredState(runtime.pluginId) === "stopped") {
+    if (
+      runtime.expectedExit &&
+      this.getDesiredState(runtime.pluginId) === "stopped"
+    ) {
       this.runtimes.delete(runtime.pluginId);
       this.updateSnapshot(runtime.pluginId, {
         status: "stopped",
@@ -695,28 +762,42 @@ export class PluginRuntimeService {
         return;
       }
 
-      void this.runWithLifecycleLock(pluginId, async () => {
-        if (this.getDesiredState(pluginId) !== "running") {
-          return;
-        }
+      if (this.disposing) {
+        return;
+      }
 
-        if (this.getGeneration(pluginId) !== generation) {
-          return;
-        }
+      void Promise.resolve(
+        this.options.onBeforeRestartLifecycleAcquire?.(pluginId)
+      )
+        .then(() =>
+          this.runWithLifecycleLock(pluginId, async () => {
+            if (this.disposing) {
+              return;
+            }
 
-        if (this.runtimes.has(pluginId)) {
-          return;
-        }
+            if (this.getDesiredState(pluginId) !== "running") {
+              return;
+            }
 
-        await this.startPluginInternal(pluginId, generation);
-      }).catch((restartError) => {
-        this.updateSnapshot(pluginId, {
-          status: "failed",
-          healthy: false,
-          lastError: this.toErrorMessage(restartError),
-          restartCount: this.getRestartCount(pluginId)
+            if (this.getGeneration(pluginId) !== generation) {
+              return;
+            }
+
+            if (this.runtimes.has(pluginId)) {
+              return;
+            }
+
+            await this.startPluginInternal(pluginId, generation);
+          })
+        )
+        .catch((restartError) => {
+          this.updateSnapshot(pluginId, {
+            status: "failed",
+            healthy: false,
+            lastError: this.toErrorMessage(restartError),
+            restartCount: this.getRestartCount(pluginId)
+          });
         });
-      });
     }, this.restartBackoffMs);
 
     this.restartTimers.set(pluginId, restartTimer);
@@ -825,9 +906,9 @@ export class PluginRuntimeService {
 
   private recordCrash(pluginId: string): number {
     const now = Date.now();
-    const activeWindow = (
-      this.crashHistory.get(pluginId) ?? []
-    ).filter((timestamp) => now - timestamp <= this.restartWindowMs);
+    const activeWindow = (this.crashHistory.get(pluginId) ?? []).filter(
+      (timestamp) => now - timestamp <= this.restartWindowMs
+    );
 
     activeWindow.push(now);
     this.crashHistory.set(pluginId, activeWindow);
@@ -837,9 +918,10 @@ export class PluginRuntimeService {
   private getRestartCount(pluginId: string): number {
     const now = Date.now();
     return (
-      this.crashHistory.get(pluginId)?.filter(
-        (timestamp) => now - timestamp <= this.restartWindowMs
-      ).length ?? 0
+      this.crashHistory
+        .get(pluginId)
+        ?.filter((timestamp) => now - timestamp <= this.restartWindowMs)
+        .length ?? 0
     );
   }
 
@@ -899,7 +981,33 @@ export class PluginRuntimeService {
     }
   }
 
+  private getKnownPluginIds(): ReadonlySet<string> {
+    return new Set<string>([
+      ...this.runtimes.keys(),
+      ...this.restartTimers.keys(),
+      ...this.lifecycleLocks.keys(),
+      ...this.desiredStates.keys(),
+      ...this.generations.keys(),
+      ...this.snapshots.keys(),
+      ...this.crashHistory.keys()
+    ]);
+  }
+
+  private throwIfDisposing(): void {
+    if (!this.disposing) {
+      return;
+    }
+
+    throw new PluginRuntimeError(
+      "PLUGIN_RUNTIME_DISPOSING",
+      "Plugin runtime service is shutting down.",
+      503
+    );
+  }
+
   private toErrorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : "Unknown plugin runtime error.";
+    return error instanceof Error
+      ? error.message
+      : "Unknown plugin runtime error.";
   }
 }

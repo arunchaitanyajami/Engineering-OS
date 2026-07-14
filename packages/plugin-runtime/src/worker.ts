@@ -43,7 +43,9 @@ const createUnsupportedMilestone23Error = (apiName: string) =>
     `${apiName} is not available in Milestone 2.3. Trusted local plugins run out of process, but process isolation is not a security sandbox yet.`
   );
 
-const createContext = (manifest: PluginManifest): EngineeringOsPluginContext => ({
+const createContext = (
+  manifest: PluginManifest
+): EngineeringOsPluginContext => ({
   plugin: {
     id: pluginId(manifest.id),
     name: manifest.name,
@@ -114,16 +116,24 @@ const createContext = (manifest: PluginManifest): EngineeringOsPluginContext => 
   },
   storage: {
     async get() {
-      return Promise.reject(createUnsupportedMilestone23Error("Plugin storage"));
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin storage")
+      );
     },
     async set() {
-      return Promise.reject(createUnsupportedMilestone23Error("Plugin storage"));
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin storage")
+      );
     },
     async delete() {
-      return Promise.reject(createUnsupportedMilestone23Error("Plugin storage"));
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin storage")
+      );
     },
     async listKeys() {
-      return Promise.reject(createUnsupportedMilestone23Error("Plugin storage"));
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin storage")
+      );
     }
   },
   permissions: {
@@ -140,10 +150,14 @@ const createContext = (manifest: PluginManifest): EngineeringOsPluginContext => 
   },
   events: {
     async emit() {
-      return Promise.reject(createUnsupportedMilestone23Error("Plugin event bus"));
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin event bus")
+      );
     },
     async subscribe() {
-      return Promise.reject(createUnsupportedMilestone23Error("Plugin event bus"));
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin event bus")
+      );
     }
   },
   mcp: {
@@ -209,8 +223,7 @@ const asRpcError = (error: unknown): RpcError => ({
 
 const resolvePluginExport = (moduleExports: Record<string, unknown>) => {
   const candidate = (moduleExports.default ?? moduleExports.plugin) as
-    | EngineeringOsPlugin
-    | undefined;
+    EngineeringOsPlugin | undefined;
 
   if (
     !candidate ||
@@ -253,7 +266,8 @@ const verifyManagedInstallationBeforeImport = async (
   installationRootPath: string,
   expectedContentHash: string
 ) => {
-  const currentHash = await calculateManagedInstallationHash(installationRootPath);
+  const currentHash =
+    await calculateManagedInstallationHash(installationRootPath);
 
   if (currentHash !== expectedContentHash) {
     throw new Error(
@@ -283,7 +297,10 @@ const handleRequest = async (request: PluginRuntimeRequest) => {
       const moduleUrl = pathToFileURL(
         join(request.installationRootPath, request.manifest.entrypoints.backend)
       ).href;
-      const moduleExports = (await import(moduleUrl)) as Record<string, unknown>;
+      const moduleExports = (await import(moduleUrl)) as Record<
+        string,
+        unknown
+      >;
       const plugin = resolvePluginExport(moduleExports);
 
       ensureManifestMatches(request.manifest, plugin.manifest);
@@ -407,7 +424,9 @@ export const runPluginRuntimeWorker = () => {
       .catch((error) => {
         state.status = "failed";
         state.lastError =
-          error instanceof Error ? error.message : "Plugin runtime request failed.";
+          error instanceof Error
+            ? error.message
+            : "Plugin runtime request failed.";
         sendResponse(parsedRequest.data.requestId, {
           success: false,
           error: asRpcError(error)

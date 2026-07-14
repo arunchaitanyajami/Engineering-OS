@@ -30,13 +30,16 @@ describe("desktop backend server", () => {
       readonly engineeringOsRange?: string;
     } = {}
   ) => {
-    const packageDirectory = await mkdtemp(join(rootDirectory, "plugin-package-"));
+    const packageDirectory = await mkdtemp(
+      join(rootDirectory, "plugin-package-")
+    );
     const manifest = {
       schemaVersion: "1",
       id: options.pluginId ?? "com.engineering-os.filesystem",
       name: "Filesystem Plugin",
       version: "0.1.0",
-      description: "Reference local plugin package for backend integration tests.",
+      description:
+        "Reference local plugin package for backend integration tests.",
       publisher: {
         name: "Engineering OS"
       },
@@ -548,15 +551,18 @@ describe("desktop backend server", () => {
       }
     });
 
-    const startResponse = await fetch(`${runtime.baseUrl}/plugins/runtime/start`, {
-      method: "POST",
-      headers: authenticatedHeaders({
-        "content-type": "application/json"
-      }),
-      body: JSON.stringify({
-        pluginId: "com.engineering-os.runtime-test"
-      })
-    });
+    const startResponse = await fetch(
+      `${runtime.baseUrl}/plugins/runtime/start`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({
+          pluginId: "com.engineering-os.runtime-test"
+        })
+      }
+    );
 
     expect(startResponse.status).toBe(200);
     await expect(startResponse.json()).resolves.toMatchObject({
@@ -583,15 +589,18 @@ describe("desktop backend server", () => {
       }
     });
 
-    const stopResponse = await fetch(`${runtime.baseUrl}/plugins/runtime/stop`, {
-      method: "POST",
-      headers: authenticatedHeaders({
-        "content-type": "application/json"
-      }),
-      body: JSON.stringify({
-        pluginId: "com.engineering-os.runtime-test"
-      })
-    });
+    const stopResponse = await fetch(
+      `${runtime.baseUrl}/plugins/runtime/stop`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({
+          pluginId: "com.engineering-os.runtime-test"
+        })
+      }
+    );
 
     expect(stopResponse.status).toBe(200);
     await expect(stopResponse.json()).resolves.toMatchObject({

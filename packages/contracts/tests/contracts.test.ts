@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  pluginManifestSchema,
-} from "@engineering-os/contracts";
+import { pluginManifestSchema } from "@engineering-os/contracts";
 import {
   mcpServerRegistrationSchema,
   pluginRuntimeProtocolVersion,
@@ -371,7 +369,8 @@ describe("pluginRuntimeRequestSchema", () => {
       type: "initialize-plugin",
       requestId: "req-1",
       pluginId: manifest.id,
-      installationRootPath: "/managed/plugins/com.engineering-os.example.plugin/0.1.0",
+      installationRootPath:
+        "/managed/plugins/com.engineering-os.example.plugin/0.1.0",
       expectedContentHash:
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       manifest

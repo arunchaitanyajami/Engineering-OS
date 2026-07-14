@@ -13,7 +13,11 @@ import type {
 } from "./domain.js";
 
 const installationModeSchema = z.enum(["managed", "development-link"]);
-const installationStateSchema = z.enum(["installed", "incompatible", "removed"]);
+const installationStateSchema = z.enum([
+  "installed",
+  "incompatible",
+  "removed"
+]);
 const pluginSourceTypeSchema = z.literal("local-directory");
 
 const readRequiredString = (value: unknown, fieldName: string): string => {
@@ -24,9 +28,16 @@ const readRequiredString = (value: unknown, fieldName: string): string => {
   return value;
 };
 
-const mapInstalledPluginRow = (row: Record<string, unknown>): InstalledPlugin => {
-  const serializedManifest = readRequiredString(row.manifest_json, "manifest_json");
-  const parsedManifest = pluginManifestSchema.parse(JSON.parse(serializedManifest));
+const mapInstalledPluginRow = (
+  row: Record<string, unknown>
+): InstalledPlugin => {
+  const serializedManifest = readRequiredString(
+    row.manifest_json,
+    "manifest_json"
+  );
+  const parsedManifest = pluginManifestSchema.parse(
+    JSON.parse(serializedManifest)
+  );
   const pluginId = readRequiredString(row.plugin_id, "plugin_id");
 
   if (pluginId !== parsedManifest.id) {
@@ -48,9 +59,7 @@ const mapInstalledPluginRow = (row: Record<string, unknown>): InstalledPlugin =>
         path: readRequiredString(row.source_path, "source_path")
       }
     },
-    state: installationStateSchema.parse(
-      row.state
-    ) as PluginInstallationState,
+    state: installationStateSchema.parse(row.state) as PluginInstallationState,
     enabled: readRequiredBoolean(row.enabled, "enabled"),
     installedAt: readRequiredString(row.installed_at, "installed_at"),
     updatedAt: readRequiredString(row.updated_at, "updated_at"),
@@ -62,13 +71,15 @@ export interface PluginRegistryRepository {
   findAll(): readonly InstalledPlugin[];
   findByPluginId(pluginId: string): InstalledPlugin | null;
   save(plugin: InstalledPlugin): InstalledPlugin;
-  updateEnabled(pluginId: string, enabled: boolean, updatedAt: string): InstalledPlugin;
+  updateEnabled(
+    pluginId: string,
+    enabled: boolean,
+    updatedAt: string
+  ): InstalledPlugin;
   deleteByPluginId(pluginId: string): void;
 }
 
-export class SqlitePluginRegistryRepository
-  implements PluginRegistryRepository
-{
+export class SqlitePluginRegistryRepository implements PluginRegistryRepository {
   constructor(private readonly database: ApplicationDatabase) {}
 
   findAll(): readonly InstalledPlugin[] {

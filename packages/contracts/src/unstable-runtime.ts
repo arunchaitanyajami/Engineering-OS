@@ -13,11 +13,7 @@ import {
   pluginIdSchema,
   pluginManifestSchema
 } from "./stable.js";
-import type {
-  PermissionScope,
-  PluginId,
-  PluginManifest
-} from "./stable.js";
+import type { PermissionScope, PluginId, PluginManifest } from "./stable.js";
 
 export type McpServerId = Brand<string, "McpServerId">;
 export type ToolId = Brand<string, "ToolId">;
@@ -26,8 +22,7 @@ export type CorrelationId = Brand<string, "CorrelationId">;
 
 export const mcpServerId = (value: string): McpServerId => value as McpServerId;
 export const toolId = (value: string): ToolId => value as ToolId;
-export const executionId = (value: string): ExecutionId =>
-  value as ExecutionId;
+export const executionId = (value: string): ExecutionId => value as ExecutionId;
 export const correlationId = (value: string): CorrelationId =>
   value as CorrelationId;
 
@@ -303,9 +298,7 @@ export const mcpServerRegistrationSchema = z
   })
   .strict();
 
-export type McpServerRegistration = z.infer<
-  typeof mcpServerRegistrationSchema
->;
+export type McpServerRegistration = z.infer<typeof mcpServerRegistrationSchema>;
 
 export interface SecretStore {
   get(namespace: string, key: string): Promise<string | null>;
@@ -340,7 +333,10 @@ export interface PluginStorageApi {
 }
 
 export interface PluginPermissionApi {
-  has(scope: PermissionScope, constraint?: Record<string, unknown>): Promise<boolean>;
+  has(
+    scope: PermissionScope,
+    constraint?: Record<string, unknown>
+  ): Promise<boolean>;
   request(
     scope: PermissionScope,
     reason: string,

@@ -15,7 +15,9 @@ export const calculateManagedInstallationHash = async (
     if (currentStats.isDirectory()) {
       const children = await readdir(currentPath);
 
-      for (const child of children.sort((left, right) => left.localeCompare(right))) {
+      for (const child of children.sort((left, right) =>
+        left.localeCompare(right)
+      )) {
         await collectFiles(join(currentPath, child));
       }
 

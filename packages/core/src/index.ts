@@ -44,7 +44,9 @@ export interface Capability {
 
 export type LegacyEngineeringOsPlugin = {
   readonly manifest: PluginManifest;
-  initialize(context: EngineeringOsPluginContext | PluginContext): Promise<void>;
+  initialize(
+    context: EngineeringOsPluginContext | PluginContext
+  ): Promise<void>;
   activate(): Promise<void>;
   deactivate(): Promise<void>;
   dispose(): Promise<void>;

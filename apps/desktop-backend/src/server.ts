@@ -1,6 +1,13 @@
 import { createRequire } from "node:module";
 import { constants as fsConstants } from "node:fs";
-import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  writeFile
+} from "node:fs/promises";
 import {
   createServer,
   type IncomingMessage,
@@ -38,6 +45,8 @@ import type {
   PersistedLogEntry
 } from "@engineering-os/platform";
 import { z } from "zod";
+
+import { PluginLifecycleService } from "./plugin-lifecycle-service.js";
 
 const require = createRequire(import.meta.url);
 const desktopPackageMetadata = require("../../desktop/package.json") as {
@@ -89,6 +98,7 @@ export interface BackendContext {
   readonly database: ApplicationDatabase;
   readonly pluginRegistry: PluginRegistryService;
   readonly pluginRuntime: PluginRuntimeService;
+  readonly pluginLifecycle: PluginLifecycleService;
   readonly logger: ReturnType<typeof createLogger>;
   flushLogs(): Promise<void>;
 }
@@ -247,17 +257,16 @@ const asPublicError = (
       ? new BackendPublicError(error.code, error.message, error.statusCode, {
           cause: error.cause ?? error
         })
-    : 
-  error instanceof BackendPublicError
-    ? error
-    : new BackendPublicError(
-        fallbackCode,
-        fallbackMessage,
-        fallbackStatusCode,
-        {
-          cause: error
-        }
-      );
+      : error instanceof BackendPublicError
+        ? error
+        : new BackendPublicError(
+            fallbackCode,
+            fallbackMessage,
+            fallbackStatusCode,
+            {
+              cause: error
+            }
+          );
 
 const atomicWriteFile = async (
   path: string,
@@ -678,7 +687,10 @@ const loadPersistedConfig = async (
 const resolvePluginRuntimeWorkerOptions =
   async (): Promise<PluginRuntimeWorkerOptions> => {
     const currentModuleDirectory = dirname(fileURLToPath(import.meta.url));
-    const builtWorkerPath = join(currentModuleDirectory, "plugin-runtime-worker.js");
+    const builtWorkerPath = join(
+      currentModuleDirectory,
+      "plugin-runtime-worker.js"
+    );
 
     if (await canAccessPath(builtWorkerPath)) {
       return {
@@ -728,6 +740,10 @@ export const createBackendContext = async (
     logger,
     worker: await resolvePluginRuntimeWorkerOptions()
   });
+  const pluginLifecycle = new PluginLifecycleService({
+    pluginRegistry,
+    pluginRuntime
+  });
   database.runMigrations();
   database.setMetadata("database_status", "ready");
 
@@ -741,6 +757,7 @@ export const createBackendContext = async (
     database,
     pluginRegistry,
     pluginRuntime,
+    pluginLifecycle,
     logger,
     flushLogs: () => fileLogTransport.flush()
   };
@@ -852,14 +869,16 @@ export const createDesktopBackendHandler =
 
         validatePluginPackagePath(packagePath);
         writeJson(response, {
-          plugin: await context.pluginRegistry.registerLocalPluginPackage(
-            packagePath
-          )
+          plugin:
+            await context.pluginRegistry.registerLocalPluginPackage(packagePath)
         });
         return;
       }
 
-      if (request.method === "POST" && requestUrl.pathname === "/plugins/enable") {
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/plugins/enable"
+      ) {
         const { pluginId } = await readValidatedJsonBody(
           request,
           MAX_JSON_PAYLOAD_BYTES,
@@ -869,12 +888,15 @@ export const createDesktopBackendHandler =
         );
 
         writeJson(response, {
-          plugin: context.pluginRegistry.enableInstalledPlugin(pluginId)
+          plugin: await context.pluginLifecycle.enablePlugin(pluginId)
         });
         return;
       }
 
-      if (request.method === "POST" && requestUrl.pathname === "/plugins/disable") {
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/plugins/disable"
+      ) {
         const { pluginId } = await readValidatedJsonBody(
           request,
           MAX_JSON_PAYLOAD_BYTES,
@@ -882,25 +904,16 @@ export const createDesktopBackendHandler =
           "PLUGIN_DISABLE_REQUEST_INVALID",
           "Plugin disable request is invalid."
         );
-
-        await context.pluginRuntime.stopPlugin(pluginId).catch((error: unknown) => {
-          if (
-            error instanceof PluginRuntimeError &&
-            error.code === "PLUGIN_RUNTIME_NOT_RUNNING"
-          ) {
-            return;
-          }
-
-          throw error;
-        });
-
         writeJson(response, {
-          plugin: context.pluginRegistry.disableInstalledPlugin(pluginId)
+          plugin: await context.pluginLifecycle.disablePlugin(pluginId)
         });
         return;
       }
 
-      if (request.method === "GET" && requestUrl.pathname === "/plugins/runtime") {
+      if (
+        request.method === "GET" &&
+        requestUrl.pathname === "/plugins/runtime"
+      ) {
         const pluginId = requestUrl.searchParams.get("pluginId")?.trim();
 
         if (!pluginId) {
@@ -930,7 +943,7 @@ export const createDesktopBackendHandler =
         );
 
         writeJson(response, {
-          runtime: await context.pluginRuntime.startPlugin(pluginId)
+          runtime: await context.pluginLifecycle.startPlugin(pluginId)
         });
         return;
       }
@@ -948,7 +961,7 @@ export const createDesktopBackendHandler =
         );
 
         writeJson(response, {
-          runtime: await context.pluginRuntime.stopPlugin(pluginId)
+          runtime: await context.pluginLifecycle.stopPlugin(pluginId)
         });
         return;
       }

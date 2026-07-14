@@ -165,7 +165,10 @@ const readRequiredString = (value: unknown, fieldName: string): string => {
   return value;
 };
 
-export const readRequiredBoolean = (value: unknown, fieldName: string): boolean => {
+export const readRequiredBoolean = (
+  value: unknown,
+  fieldName: string
+): boolean => {
   if (typeof value === "boolean") {
     return value;
   }
@@ -333,8 +336,7 @@ export class ApplicationDatabase {
     parameters: readonly SqlParameter[] = []
   ): Record<string, unknown> | null {
     const row = this.connection.prepare(sql).get(...parameters) as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
 
     return row ?? null;
   }

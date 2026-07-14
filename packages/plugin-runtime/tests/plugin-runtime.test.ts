@@ -33,7 +33,9 @@ const createRuntimePluginPackage = async (
     readonly backendModuleSource?: string;
   } = {}
 ) => {
-  const packageDirectory = await mkdtemp(join(rootDirectory, "plugin-runtime-"));
+  const packageDirectory = await mkdtemp(
+    join(rootDirectory, "plugin-runtime-")
+  );
   const pluginId = options.pluginId ?? "com.engineering-os.runtime-example";
   const version = options.version ?? "0.1.0";
   const backendEntrypoint = "./dist/backend/index.js";
@@ -151,9 +153,14 @@ describe("PluginRuntimeService", () => {
       readonly onBeforeRuntimeSpawn?: (
         plugin: InstalledPlugin
       ) => Promise<void> | void;
+      readonly onBeforeRestartLifecycleAcquire?: (
+        pluginId: string
+      ) => Promise<void> | void;
     } = {}
   ) => {
-    const fixturesDirectory = await mkdtemp(join(tmpdir(), "engineering-os-plugin-runtime-"));
+    const fixturesDirectory = await mkdtemp(
+      join(tmpdir(), "engineering-os-plugin-runtime-")
+    );
     directories.push(fixturesDirectory);
 
     const database = new ApplicationDatabase(":memory:");
@@ -166,15 +173,16 @@ describe("PluginRuntimeService", () => {
       engineeringOsVersion: "0.1.0",
       installationsRootPath
     });
-    const workerWrapperPath = join(fixturesDirectory, "plugin-runtime-worker-wrapper.ts");
+    const workerWrapperPath = join(
+      fixturesDirectory,
+      "plugin-runtime-worker-wrapper.ts"
+    );
 
     await writeFile(
       workerWrapperPath,
       `
         import { runPluginRuntimeWorker } from ${JSON.stringify(
-          fileURLToPath(
-            new URL("../src/worker.ts", import.meta.url)
-          )
+          fileURLToPath(new URL("../src/worker.ts", import.meta.url))
         )};
 
         runPluginRuntimeWorker();
@@ -195,6 +203,12 @@ describe("PluginRuntimeService", () => {
       maxRestartsPerWindow: options.maxRestartsPerWindow ?? 3,
       ...(options.onBeforeRuntimeSpawn
         ? { onBeforeRuntimeSpawn: options.onBeforeRuntimeSpawn }
+        : {}),
+      ...(options.onBeforeRestartLifecycleAcquire
+        ? {
+            onBeforeRestartLifecycleAcquire:
+              options.onBeforeRestartLifecycleAcquire
+          }
         : {})
     });
 
@@ -209,14 +223,19 @@ describe("PluginRuntimeService", () => {
     registry: PluginRegistryService,
     packageDirectory: string
   ) => {
-    const installedPlugin = await registry.registerLocalPluginPackage(packageDirectory);
+    const installedPlugin =
+      await registry.registerLocalPluginPackage(packageDirectory);
     return registry.enableInstalledPlugin(installedPlugin.pluginId);
   };
 
   it("starts and stops a managed plugin through a child runtime process", async () => {
     const { fixturesDirectory, registry, runtime } = await createRuntime();
-    const packageDirectory = await createRuntimePluginPackage(fixturesDirectory);
-    const installedPlugin = await registerEnabledPlugin(registry, packageDirectory);
+    const packageDirectory =
+      await createRuntimePluginPackage(fixturesDirectory);
+    const installedPlugin = await registerEnabledPlugin(
+      registry,
+      packageDirectory
+    );
 
     const startedRuntime = await runtime.startPlugin(installedPlugin.pluginId);
 
@@ -226,7 +245,9 @@ describe("PluginRuntimeService", () => {
       healthy: true
     });
     await expect(
-      access(join(installedPlugin.installation.rootPath, "dist/backend/index.js"))
+      access(
+        join(installedPlugin.installation.rootPath, "dist/backend/index.js")
+      )
     ).resolves.toBe(undefined);
     await expect(
       readFile(join(packageDirectory, "dist/backend/index.js"), "utf8")
@@ -251,10 +272,16 @@ describe("PluginRuntimeService", () => {
 
   it("rejects runtime launch when the managed installation hash no longer matches", async () => {
     const { fixturesDirectory, registry, runtime } = await createRuntime();
-    const packageDirectory = await createRuntimePluginPackage(fixturesDirectory, {
-      pluginId: "com.engineering-os.integrity"
-    });
-    const installedPlugin = await registerEnabledPlugin(registry, packageDirectory);
+    const packageDirectory = await createRuntimePluginPackage(
+      fixturesDirectory,
+      {
+        pluginId: "com.engineering-os.integrity"
+      }
+    );
+    const installedPlugin = await registerEnabledPlugin(
+      registry,
+      packageDirectory
+    );
 
     await writeFile(
       join(installedPlugin.installation.rootPath, "dist/backend/index.js"),
@@ -262,12 +289,12 @@ describe("PluginRuntimeService", () => {
       "utf8"
     );
 
-    await expect(runtime.startPlugin(installedPlugin.pluginId)).rejects.toMatchObject(
-      {
-        code: "PLUGIN_RUNTIME_INTEGRITY_CHECK_FAILED",
-        statusCode: 409
-      }
-    );
+    await expect(
+      runtime.startPlugin(installedPlugin.pluginId)
+    ).rejects.toMatchObject({
+      code: "PLUGIN_RUNTIME_INTEGRITY_CHECK_FAILED",
+      statusCode: 409
+    });
   });
 
   it("rejects launch when the managed installation changes after parent verification but before worker import", async () => {
@@ -286,12 +313,20 @@ describe("PluginRuntimeService", () => {
         );
       }
     });
-    const packageDirectory = await createRuntimePluginPackage(fixturesDirectory, {
-      pluginId: "com.engineering-os.worker-integrity"
-    });
-    const installedPlugin = await registerEnabledPlugin(registry, packageDirectory);
+    const packageDirectory = await createRuntimePluginPackage(
+      fixturesDirectory,
+      {
+        pluginId: "com.engineering-os.worker-integrity"
+      }
+    );
+    const installedPlugin = await registerEnabledPlugin(
+      registry,
+      packageDirectory
+    );
 
-    await expect(runtime.startPlugin(installedPlugin.pluginId)).rejects.toMatchObject({
+    await expect(
+      runtime.startPlugin(installedPlugin.pluginId)
+    ).rejects.toMatchObject({
       code: "ERROR",
       statusCode: 502
     });
@@ -299,13 +334,19 @@ describe("PluginRuntimeService", () => {
 
   it("rejects disabled plugins before runtime launch", async () => {
     const { fixturesDirectory, registry, runtime } = await createRuntime();
-    const packageDirectory = await createRuntimePluginPackage(fixturesDirectory, {
-      pluginId: "com.engineering-os.disabled-plugin"
-    });
+    const packageDirectory = await createRuntimePluginPackage(
+      fixturesDirectory,
+      {
+        pluginId: "com.engineering-os.disabled-plugin"
+      }
+    );
 
-    const installedPlugin = await registry.registerLocalPluginPackage(packageDirectory);
+    const installedPlugin =
+      await registry.registerLocalPluginPackage(packageDirectory);
 
-    await expect(runtime.startPlugin(installedPlugin.pluginId)).rejects.toMatchObject({
+    await expect(
+      runtime.startPlugin(installedPlugin.pluginId)
+    ).rejects.toMatchObject({
       code: "PLUGIN_RUNTIME_PLUGIN_DISABLED",
       statusCode: 409
     });
@@ -318,9 +359,11 @@ describe("PluginRuntimeService", () => {
       }
     });
     const visibleValuePath = join(fixturesDirectory, "runtime-env-value.txt");
-    const packageDirectory = await createRuntimePluginPackage(fixturesDirectory, {
-      pluginId: "com.engineering-os.env-allowlist",
-      backendModuleSource: `
+    const packageDirectory = await createRuntimePluginPackage(
+      fixturesDirectory,
+      {
+        pluginId: "com.engineering-os.env-allowlist",
+        backendModuleSource: `
         import { writeFile } from "node:fs/promises";
 
         const manifest = {
@@ -351,8 +394,12 @@ describe("PluginRuntimeService", () => {
           async dispose() {}
         };
       `
-    });
-    const installedPlugin = await registerEnabledPlugin(registry, packageDirectory);
+      }
+    );
+    const installedPlugin = await registerEnabledPlugin(
+      registry,
+      packageDirectory
+    );
 
     process.env.EOS_RUNTIME_TEST_SENTINEL = "super-secret-value";
     try {
@@ -367,10 +414,16 @@ describe("PluginRuntimeService", () => {
 
   it("serializes concurrent start requests for the same plugin", async () => {
     const { fixturesDirectory, registry, runtime } = await createRuntime();
-    const packageDirectory = await createRuntimePluginPackage(fixturesDirectory, {
-      pluginId: "com.engineering-os.concurrent-start"
-    });
-    const installedPlugin = await registerEnabledPlugin(registry, packageDirectory);
+    const packageDirectory = await createRuntimePluginPackage(
+      fixturesDirectory,
+      {
+        pluginId: "com.engineering-os.concurrent-start"
+      }
+    );
+    const installedPlugin = await registerEnabledPlugin(
+      registry,
+      packageDirectory
+    );
 
     const results = await Promise.allSettled([
       runtime.startPlugin(installedPlugin.pluginId),
@@ -401,12 +454,21 @@ describe("PluginRuntimeService", () => {
     const { fixturesDirectory, registry, runtime } = await createRuntime({
       restartBackoffMs: 300
     });
-    const crashMarkerPath = join(fixturesDirectory, "runtime-restart-cancel-marker.txt");
-    const packageDirectory = await createRuntimePluginPackage(fixturesDirectory, {
-      pluginId: "com.engineering-os.restart-cancel",
-      crashMarkerPath
-    });
-    const installedPlugin = await registerEnabledPlugin(registry, packageDirectory);
+    const crashMarkerPath = join(
+      fixturesDirectory,
+      "runtime-restart-cancel-marker.txt"
+    );
+    const packageDirectory = await createRuntimePluginPackage(
+      fixturesDirectory,
+      {
+        pluginId: "com.engineering-os.restart-cancel",
+        crashMarkerPath
+      }
+    );
+    const installedPlugin = await registerEnabledPlugin(
+      registry,
+      packageDirectory
+    );
 
     await runtime.startPlugin(installedPlugin.pluginId);
 
@@ -442,11 +504,17 @@ describe("PluginRuntimeService", () => {
   it("restarts a crashed child runtime within the supervision window", async () => {
     const { fixturesDirectory, registry, runtime } = await createRuntime();
     const crashMarkerPath = join(fixturesDirectory, "runtime-crash-marker.txt");
-    const packageDirectory = await createRuntimePluginPackage(fixturesDirectory, {
-      pluginId: "com.engineering-os.restarting-plugin",
-      crashMarkerPath
-    });
-    const installedPlugin = await registerEnabledPlugin(registry, packageDirectory);
+    const packageDirectory = await createRuntimePluginPackage(
+      fixturesDirectory,
+      {
+        pluginId: "com.engineering-os.restarting-plugin",
+        crashMarkerPath
+      }
+    );
+    const installedPlugin = await registerEnabledPlugin(
+      registry,
+      packageDirectory
+    );
 
     await runtime.startPlugin(installedPlugin.pluginId);
 
@@ -474,10 +542,15 @@ describe("PluginRuntimeService", () => {
       restartBackoffMs: 50,
       maxRestartsPerWindow: 3
     });
-    const crashCounterPath = join(fixturesDirectory, "runtime-crash-loop-count.txt");
-    const packageDirectory = await createRuntimePluginPackage(fixturesDirectory, {
-      pluginId: "com.engineering-os.crash-loop",
-      backendModuleSource: `
+    const crashCounterPath = join(
+      fixturesDirectory,
+      "runtime-crash-loop-count.txt"
+    );
+    const packageDirectory = await createRuntimePluginPackage(
+      fixturesDirectory,
+      {
+        pluginId: "com.engineering-os.crash-loop",
+        backendModuleSource: `
         import { readFile, writeFile } from "node:fs/promises";
 
         const manifest = {
@@ -516,8 +589,12 @@ describe("PluginRuntimeService", () => {
           async dispose() {}
         };
       `
-    });
-    const installedPlugin = await registerEnabledPlugin(registry, packageDirectory);
+      }
+    );
+    const installedPlugin = await registerEnabledPlugin(
+      registry,
+      packageDirectory
+    );
 
     await runtime.startPlugin(installedPlugin.pluginId);
 
@@ -544,6 +621,78 @@ describe("PluginRuntimeService", () => {
       status: "failed",
       healthy: false,
       restartCount: 3
+    });
+  });
+
+  it("prevents restart transition work from spawning after disposal begins", async () => {
+    let releaseRestartAcquire: () => void = () => undefined;
+    let restartAcquireEntered = false;
+    const restartAcquireGate = new Promise<void>((resolve) => {
+      releaseRestartAcquire = resolve;
+    });
+    const { fixturesDirectory, registry, runtime } = await createRuntime({
+      restartBackoffMs: 50,
+      onBeforeRestartLifecycleAcquire: async () => {
+        restartAcquireEntered = true;
+        await restartAcquireGate;
+      }
+    });
+    const crashMarkerPath = join(
+      fixturesDirectory,
+      "runtime-dispose-restart-marker.txt"
+    );
+    const packageDirectory = await createRuntimePluginPackage(
+      fixturesDirectory,
+      {
+        pluginId: "com.engineering-os.dispose-restart",
+        crashMarkerPath
+      }
+    );
+    const installedPlugin = await registerEnabledPlugin(
+      registry,
+      packageDirectory
+    );
+
+    await runtime.startPlugin(installedPlugin.pluginId);
+
+    await waitFor(async () => {
+      const crashedOnce = await access(crashMarkerPath)
+        .then(() => true)
+        .catch(() => false);
+      return crashedOnce && restartAcquireEntered;
+    }, 3_000);
+
+    const disposePromise = runtime.dispose();
+
+    await new Promise((resolve) => {
+      globalThis.setTimeout(resolve, 50);
+    });
+
+    releaseRestartAcquire();
+    await disposePromise;
+
+    await new Promise((resolve) => {
+      globalThis.setTimeout(resolve, 150);
+    });
+
+    const runtimeState = runtime as unknown as {
+      readonly runtimes: Map<string, unknown>;
+      readonly restartTimers: Map<string, unknown>;
+    };
+
+    expect(runtimeState.runtimes.size).toBe(0);
+    expect(runtimeState.restartTimers.size).toBe(0);
+    expect(runtime.getRuntimeHealth(installedPlugin.pluginId)).toMatchObject({
+      pluginId: installedPlugin.pluginId,
+      status: "stopped",
+      healthy: false
+    });
+
+    await expect(
+      runtime.startPlugin(installedPlugin.pluginId)
+    ).rejects.toMatchObject({
+      code: "PLUGIN_RUNTIME_DISPOSING",
+      statusCode: 503
     });
   });
 });

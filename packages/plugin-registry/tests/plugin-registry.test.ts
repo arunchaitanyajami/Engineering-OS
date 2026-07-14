@@ -34,13 +34,19 @@ const createLocalPluginPackage = async (
     readonly manifestFileName?: (typeof localPluginManifestFileNames)[number];
   } = {}
 ) => {
-  const packageDirectory = await mkdtemp(join(rootDirectory, "plugin-package-"));
-  const backendEntrypoint = options.backendEntrypoint ?? "./dist/backend/index.js";
+  const packageDirectory = await mkdtemp(
+    join(rootDirectory, "plugin-package-")
+  );
+  const backendEntrypoint =
+    options.backendEntrypoint ?? "./dist/backend/index.js";
   const manifestFileName =
     options.manifestFileName ?? localPluginManifestFileNames[0];
 
   await mkdir(join(packageDirectory, "dist/backend"), { recursive: true });
-  await writeFile(join(packageDirectory, "dist/backend/index.js"), "export {};\n");
+  await writeFile(
+    join(packageDirectory, "dist/backend/index.js"),
+    "export {};\n"
+  );
   await writeFile(
     join(packageDirectory, manifestFileName),
     JSON.stringify(
@@ -89,7 +95,9 @@ describe("PluginRegistryService", () => {
   });
 
   it("discovers and registers a valid local plugin package", async () => {
-    const fixturesDirectory = await mkdtemp(join(tmpdir(), "engineering-os-plugin-registry-"));
+    const fixturesDirectory = await mkdtemp(
+      join(tmpdir(), "engineering-os-plugin-registry-")
+    );
     directories.push(fixturesDirectory);
 
     const database = new ApplicationDatabase(":memory:");
@@ -137,7 +145,9 @@ describe("PluginRegistryService", () => {
   });
 
   it("rejects plugin packages that are incompatible with the current app version", async () => {
-    const fixturesDirectory = await mkdtemp(join(tmpdir(), "engineering-os-plugin-registry-"));
+    const fixturesDirectory = await mkdtemp(
+      join(tmpdir(), "engineering-os-plugin-registry-")
+    );
     directories.push(fixturesDirectory);
 
     const database = new ApplicationDatabase(":memory:");
@@ -164,7 +174,9 @@ describe("PluginRegistryService", () => {
   });
 
   it("rejects plugin packages whose backend entrypoint is missing", async () => {
-    const fixturesDirectory = await mkdtemp(join(tmpdir(), "engineering-os-plugin-registry-"));
+    const fixturesDirectory = await mkdtemp(
+      join(tmpdir(), "engineering-os-plugin-registry-")
+    );
     directories.push(fixturesDirectory);
 
     const database = new ApplicationDatabase(":memory:");
@@ -191,7 +203,9 @@ describe("PluginRegistryService", () => {
   });
 
   it("rejects duplicate plugin registrations by plugin id", async () => {
-    const fixturesDirectory = await mkdtemp(join(tmpdir(), "engineering-os-plugin-registry-"));
+    const fixturesDirectory = await mkdtemp(
+      join(tmpdir(), "engineering-os-plugin-registry-")
+    );
     directories.push(fixturesDirectory);
 
     const database = new ApplicationDatabase(":memory:");
@@ -205,13 +219,19 @@ describe("PluginRegistryService", () => {
       engineeringOsVersion: "0.1.0",
       installationsRootPath
     });
-    const firstPackageDirectory = await createLocalPluginPackage(fixturesDirectory, {
-      id: "com.engineering-os.github"
-    });
-    const secondPackageDirectory = await createLocalPluginPackage(fixturesDirectory, {
-      id: "com.engineering-os.github",
-      manifestFileName: "plugin-manifest.json"
-    });
+    const firstPackageDirectory = await createLocalPluginPackage(
+      fixturesDirectory,
+      {
+        id: "com.engineering-os.github"
+      }
+    );
+    const secondPackageDirectory = await createLocalPluginPackage(
+      fixturesDirectory,
+      {
+        id: "com.engineering-os.github",
+        manifestFileName: "plugin-manifest.json"
+      }
+    );
 
     await registry.registerLocalPluginPackage(firstPackageDirectory);
 
@@ -292,17 +312,11 @@ describe("PluginRegistryService", () => {
     });
 
     await expect(
-      access(
-        join(
-          installationsRootPath,
-          "com.engineering-os.slack",
-          "0.1.0"
-        )
-      )
+      access(join(installationsRootPath, "com.engineering-os.slack", "0.1.0"))
     ).rejects.toThrow();
-    await expect(readdir(join(installationsRootPath, ".staging"))).resolves.toEqual(
-      []
-    );
+    await expect(
+      readdir(join(installationsRootPath, ".staging"))
+    ).resolves.toEqual([]);
     expect(
       new SqlitePluginRegistryRepository(database).findByPluginId(
         "com.engineering-os.slack"
@@ -336,8 +350,12 @@ describe("PluginRegistryService", () => {
       registry.registerLocalPluginPackage(packageDirectory)
     ]);
 
-    const fulfilledResults = results.filter((result) => result.status === "fulfilled");
-    const rejectedResults = results.filter((result) => result.status === "rejected");
+    const fulfilledResults = results.filter(
+      (result) => result.status === "fulfilled"
+    );
+    const rejectedResults = results.filter(
+      (result) => result.status === "rejected"
+    );
 
     expect(fulfilledResults).toHaveLength(1);
     expect(rejectedResults).toHaveLength(1);
@@ -351,11 +369,13 @@ describe("PluginRegistryService", () => {
     expect(installedPlugins).toHaveLength(1);
     expect(installedPlugins[0]).toBeDefined();
     expect(installedPlugins[0]?.pluginId).toBe("com.engineering-os.jira");
-    await expect(access(installedPlugins[0]!.installation.rootPath)).resolves.toBe(
-      undefined
-    );
     await expect(
-      calculateManagedInstallationHash(installedPlugins[0]!.installation.rootPath)
+      access(installedPlugins[0]!.installation.rootPath)
+    ).resolves.toBe(undefined);
+    await expect(
+      calculateManagedInstallationHash(
+        installedPlugins[0]!.installation.rootPath
+      )
     ).resolves.toBe(installedPlugins[0]!.installation.contentHash);
   });
 

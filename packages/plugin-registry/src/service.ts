@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import {
   access,
@@ -32,6 +32,7 @@ import {
   localPluginManifestFileNames,
   type PluginInstallationState
 } from "./domain.js";
+import { calculateManagedInstallationHash } from "./integrity.js";
 import type { PluginRegistryRepository } from "./repository.js";
 
 const MAX_PLUGIN_MANIFEST_BYTES = 256 * 1024;
@@ -294,47 +295,6 @@ const copyDirectoryRejectingSymlinks = async (
   );
 };
 
-const hashDirectoryContents = async (rootPath: string): Promise<string> => {
-  const entries: string[] = [];
-
-  const collectFiles = async (currentPath: string) => {
-    const currentStats = await lstat(currentPath);
-
-    if (currentStats.isDirectory()) {
-      const children = await readdir(currentPath);
-
-      for (const child of children.sort((left, right) => left.localeCompare(right))) {
-        await collectFiles(join(currentPath, child));
-      }
-
-      return;
-    }
-
-    if (currentStats.isSymbolicLink()) {
-      throw new PluginRegistryError(
-        "PLUGIN_SYMLINK_UNSUPPORTED",
-        `Plugin package path '${currentPath}' contains an unsupported symbolic link.`,
-        400
-      );
-    }
-
-    entries.push(currentPath);
-  };
-
-  await collectFiles(rootPath);
-
-  const hash = createHash("sha256");
-
-  for (const entry of entries) {
-    hash.update(relative(rootPath, entry));
-    hash.update("\n");
-    hash.update(await readFile(entry));
-    hash.update("\n");
-  }
-
-  return hash.digest("hex");
-};
-
 const createInstalledPlugin = (
   inspectedPackage: InspectedPluginPackage,
   source: PluginPackageSource,
@@ -407,6 +367,10 @@ export class PluginRegistryService {
 
   listInstalledPlugins(): readonly InstalledPlugin[] {
     return this.options.repository.findAll();
+  }
+
+  getInstalledPlugin(pluginId: string): InstalledPlugin | null {
+    return this.options.repository.findByPluginId(pluginId);
   }
 
   private async runWithInstallationLock<T>(
@@ -500,7 +464,8 @@ export class PluginRegistryService {
             );
           }
 
-          const contentHash = await hashDirectoryContents(stagingRootPath);
+          const contentHash =
+            await calculateManagedInstallationHash(stagingRootPath);
           await mkdir(dirname(installationRootPath), { recursive: true });
 
           try {

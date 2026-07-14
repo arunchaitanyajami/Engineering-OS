@@ -5,16 +5,16 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
 const rootDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const outputFile = resolve(
-  rootDirectory,
-  "apps/desktop-backend/dist/server.js"
-);
+const outputDirectory = resolve(rootDirectory, "apps/desktop-backend/dist");
 
-await mkdir(dirname(outputFile), { recursive: true });
+await mkdir(outputDirectory, { recursive: true });
 
 await build({
-  entryPoints: [resolve(rootDirectory, "apps/desktop-backend/src/server.ts")],
-  outfile: outputFile,
+  entryPoints: [
+    resolve(rootDirectory, "apps/desktop-backend/src/server.ts"),
+    resolve(rootDirectory, "apps/desktop-backend/src/plugin-runtime-worker.ts")
+  ],
+  outdir: outputDirectory,
   bundle: true,
   platform: "node",
   format: "esm",

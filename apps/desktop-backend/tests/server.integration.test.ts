@@ -31,34 +31,45 @@ describe("desktop backend server", () => {
     } = {}
   ) => {
     const packageDirectory = await mkdtemp(join(rootDirectory, "plugin-package-"));
+    const manifest = {
+      schemaVersion: "1",
+      id: options.pluginId ?? "com.engineering-os.filesystem",
+      name: "Filesystem Plugin",
+      version: "0.1.0",
+      description: "Reference local plugin package for backend integration tests.",
+      publisher: {
+        name: "Engineering OS"
+      },
+      engines: {
+        engineeringOs: options.engineeringOsRange ?? ">=0.1.0"
+      },
+      entrypoints: {
+        backend: "./dist/backend/index.js"
+      },
+      capabilities: [],
+      permissions: [],
+      mcp: []
+    };
 
     await mkdir(join(packageDirectory, "dist/backend"), { recursive: true });
-    await writeFile(join(packageDirectory, "dist/backend/index.js"), "export {};\n");
+    await writeFile(
+      join(packageDirectory, "dist/backend/index.js"),
+      `
+        const manifest = ${JSON.stringify(manifest)};
+
+        export default {
+          manifest,
+          async initialize() {},
+          async activate() {},
+          async deactivate() {},
+          async dispose() {}
+        };
+      `,
+      "utf8"
+    );
     await writeFile(
       join(packageDirectory, "engineering-os.plugin.json"),
-      JSON.stringify(
-        {
-          schemaVersion: "1",
-          id: options.pluginId ?? "com.engineering-os.filesystem",
-          name: "Filesystem Plugin",
-          version: "0.1.0",
-          description: "Reference local plugin package for backend integration tests.",
-          publisher: {
-            name: "Engineering OS"
-          },
-          engines: {
-            engineeringOs: options.engineeringOsRange ?? ">=0.1.0"
-          },
-          entrypoints: {
-            backend: "./dist/backend/index.js"
-          },
-          capabilities: [],
-          permissions: [],
-          mcp: []
-        },
-        null,
-        2
-      ),
+      JSON.stringify(manifest, null, 2),
       "utf8"
     );
 
@@ -502,6 +513,75 @@ describe("desktop backend server", () => {
       code: "PLUGIN_VERSION_INCOMPATIBLE",
       message:
         "Plugin 'com.engineering-os.filesystem' requires Engineering OS '>=0.2.0' but current version is '0.1.0'."
+    });
+  });
+
+  it("starts, inspects, and stops plugin runtimes through the backend API", async () => {
+    runtime = await startRuntime();
+    const packageDirectory = await createLocalPluginPackage(appDataDirectory, {
+      pluginId: "com.engineering-os.runtime-test"
+    });
+
+    await fetch(`${runtime.baseUrl}/plugins/register-local`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({ packagePath: packageDirectory })
+    });
+
+    const startResponse = await fetch(`${runtime.baseUrl}/plugins/runtime/start`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        pluginId: "com.engineering-os.runtime-test"
+      })
+    });
+
+    expect(startResponse.status).toBe(200);
+    await expect(startResponse.json()).resolves.toMatchObject({
+      runtime: {
+        pluginId: "com.engineering-os.runtime-test",
+        status: "running",
+        healthy: true
+      }
+    });
+
+    const healthResponse = await fetch(
+      `${runtime.baseUrl}/plugins/runtime?pluginId=com.engineering-os.runtime-test`,
+      {
+        headers: authenticatedHeaders()
+      }
+    );
+
+    expect(healthResponse.status).toBe(200);
+    await expect(healthResponse.json()).resolves.toMatchObject({
+      runtime: {
+        pluginId: "com.engineering-os.runtime-test",
+        status: "running",
+        healthy: true
+      }
+    });
+
+    const stopResponse = await fetch(`${runtime.baseUrl}/plugins/runtime/stop`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        pluginId: "com.engineering-os.runtime-test"
+      })
+    });
+
+    expect(stopResponse.status).toBe(200);
+    await expect(stopResponse.json()).resolves.toMatchObject({
+      runtime: {
+        pluginId: "com.engineering-os.runtime-test",
+        status: "stopped",
+        healthy: false
+      }
     });
   });
 });

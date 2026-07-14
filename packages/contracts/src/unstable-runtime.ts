@@ -32,6 +32,24 @@ export const correlationId = (value: string): CorrelationId =>
   value as CorrelationId;
 
 export const unstableContractsStage = "unstable-runtime";
+export const pluginRuntimeProtocolVersion = "1";
+export const pluginRuntimeProtocolVersionSchema = z.literal(
+  pluginRuntimeProtocolVersion
+);
+
+export type PluginRuntimeProtocolVersion = z.infer<
+  typeof pluginRuntimeProtocolVersionSchema
+>;
+
+export const pluginRuntimeStatusSchema = z.enum([
+  "stopped",
+  "starting",
+  "running",
+  "stopping",
+  "failed"
+]);
+
+export type PluginRuntimeStatus = z.infer<typeof pluginRuntimeStatusSchema>;
 
 export const pluginStateSchema = z.enum([
   "discovered",
@@ -386,6 +404,7 @@ export type RpcError = z.infer<typeof rpcErrorSchema>;
 
 export const rpcResponseSchema = z
   .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
     requestId: z.string().min(1),
     success: z.boolean(),
     data: z.unknown().optional(),
@@ -394,23 +413,44 @@ export const rpcResponseSchema = z
   .strict();
 
 export interface RpcResponse<TData> {
+  protocolVersion: PluginRuntimeProtocolVersion;
   requestId: string;
   success: boolean;
   data?: TData;
   error?: RpcError;
 }
 
+export const pluginRuntimeHealthSnapshotSchema = z
+  .object({
+    pluginId: pluginIdSchema,
+    status: pluginRuntimeStatusSchema,
+    healthy: z.boolean(),
+    processId: z.number().int().positive().optional(),
+    initializedAt: isoTimestampSchema.optional(),
+    activatedAt: isoTimestampSchema.optional(),
+    restartCount: z.number().int().nonnegative().default(0),
+    lastError: z.string().min(1).optional()
+  })
+  .strict();
+
+export type PluginRuntimeHealthSnapshot = z.infer<
+  typeof pluginRuntimeHealthSnapshotSchema
+>;
+
 export const initializePluginRequestSchema = z
   .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
     type: z.literal("initialize-plugin"),
     requestId: z.string().min(1),
     pluginId: pluginIdSchema,
+    installationRootPath: genericPathSchema,
     manifest: pluginManifestSchema
   })
   .strict();
 
 export const activatePluginRequestSchema = z
   .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
     type: z.literal("activate-plugin"),
     requestId: z.string().min(1),
     pluginId: pluginIdSchema
@@ -419,7 +459,17 @@ export const activatePluginRequestSchema = z
 
 export const deactivatePluginRequestSchema = z
   .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
     type: z.literal("deactivate-plugin"),
+    requestId: z.string().min(1),
+    pluginId: pluginIdSchema
+  })
+  .strict();
+
+export const shutdownPluginRequestSchema = z
+  .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
+    type: z.literal("shutdown-plugin"),
     requestId: z.string().min(1),
     pluginId: pluginIdSchema
   })
@@ -427,6 +477,7 @@ export const deactivatePluginRequestSchema = z
 
 export const readConfigurationRequestSchema = z
   .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
     type: z.literal("read-configuration"),
     requestId: z.string().min(1),
     pluginId: pluginIdSchema,
@@ -436,6 +487,7 @@ export const readConfigurationRequestSchema = z
 
 export const invokePluginCapabilityRequestSchema = z
   .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
     type: z.literal("invoke-plugin-capability"),
     requestId: z.string().min(1),
     pluginId: pluginIdSchema,
@@ -446,6 +498,7 @@ export const invokePluginCapabilityRequestSchema = z
 
 export const healthCheckRequestSchema = z
   .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
     type: z.literal("health-check"),
     requestId: z.string().min(1),
     pluginId: pluginIdSchema
@@ -456,6 +509,7 @@ export const pluginRuntimeRequestSchema = z.discriminatedUnion("type", [
   initializePluginRequestSchema,
   activatePluginRequestSchema,
   deactivatePluginRequestSchema,
+  shutdownPluginRequestSchema,
   readConfigurationRequestSchema,
   invokePluginCapabilityRequestSchema,
   healthCheckRequestSchema
@@ -468,6 +522,7 @@ export type ActivatePluginRequest = z.infer<typeof activatePluginRequestSchema>;
 export type DeactivatePluginRequest = z.infer<
   typeof deactivatePluginRequestSchema
 >;
+export type ShutdownPluginRequest = z.infer<typeof shutdownPluginRequestSchema>;
 export type ReadConfigurationRequest = z.infer<
   typeof readConfigurationRequestSchema
 >;

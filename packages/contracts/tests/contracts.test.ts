@@ -5,6 +5,7 @@ import {
 } from "@engineering-os/contracts";
 import {
   mcpServerRegistrationSchema,
+  pluginRuntimeProtocolVersion,
   pluginRuntimeRequestSchema,
   toolExecutionRequestSchema
 } from "@engineering-os/contracts/unstable-runtime";
@@ -366,9 +367,11 @@ describe("pluginRuntimeRequestSchema", () => {
     });
 
     const result = pluginRuntimeRequestSchema.safeParse({
+      protocolVersion: pluginRuntimeProtocolVersion,
       type: "initialize-plugin",
       requestId: "req-1",
       pluginId: manifest.id,
+      installationRootPath: "/managed/plugins/com.engineering-os.example.plugin/0.1.0",
       manifest
     });
 

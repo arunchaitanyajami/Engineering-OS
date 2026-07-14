@@ -12,6 +12,7 @@ const workspaceAliasEntries = [
   ["@engineering-os/logger", "../packages/logger/src/index.ts"],
   ["@engineering-os/database", "../packages/database/src/index.ts"],
   ["@engineering-os/plugin-registry", "../packages/plugin-registry/src/index.ts"],
+  ["@engineering-os/plugin-runtime", "../packages/plugin-runtime/src/index.ts"],
   ["@engineering-os/platform", "../packages/platform/src/index.ts"],
   ["@engineering-os/security", "../packages/security/src/index.ts"],
   ["@engineering-os/events", "../packages/events/src/index.ts"],

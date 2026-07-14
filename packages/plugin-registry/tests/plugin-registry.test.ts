@@ -11,14 +11,14 @@ import {
   writeFile
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
-import { createHash } from "node:crypto";
+import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ApplicationDatabase } from "@engineering-os/database";
 import { createLogger } from "@engineering-os/logger";
 import {
+  calculateManagedInstallationHash,
   PluginRegistryService,
   SqlitePluginRegistryRepository,
   localPluginManifestFileNames
@@ -70,39 +70,6 @@ const createLocalPluginPackage = async (
   );
 
   return packageDirectory;
-};
-
-const hashDirectoryContents = async (rootPath: string): Promise<string> => {
-  const entries: string[] = [];
-
-  const collectFiles = async (currentPath: string) => {
-    const currentStats = await lstat(currentPath);
-
-    if (currentStats.isDirectory()) {
-      const children = await readdir(currentPath);
-
-      for (const child of children.sort((left, right) => left.localeCompare(right))) {
-        await collectFiles(join(currentPath, child));
-      }
-
-      return;
-    }
-
-    entries.push(currentPath);
-  };
-
-  await collectFiles(rootPath);
-
-  const hash = createHash("sha256");
-
-  for (const entry of entries) {
-    hash.update(relative(rootPath, entry));
-    hash.update("\n");
-    hash.update(await readFile(entry));
-    hash.update("\n");
-  }
-
-  return hash.digest("hex");
 };
 
 describe("PluginRegistryService", () => {
@@ -388,7 +355,7 @@ describe("PluginRegistryService", () => {
       undefined
     );
     await expect(
-      hashDirectoryContents(installedPlugins[0]!.installation.rootPath)
+      calculateManagedInstallationHash(installedPlugins[0]!.installation.rootPath)
     ).resolves.toBe(installedPlugins[0]!.installation.contentHash);
   });
 });

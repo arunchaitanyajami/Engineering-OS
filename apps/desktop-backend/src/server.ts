@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import {
   createServer,
   type IncomingMessage,
@@ -9,7 +10,7 @@ import {
 import { timingSafeEqual } from "node:crypto";
 import type { Socket } from "node:net";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { semanticVersionSchema } from "@engineering-os/contracts";
 import {
@@ -17,6 +18,11 @@ import {
   type LogEntry,
   type LogTransport
 } from "@engineering-os/logger";
+import {
+  PluginRuntimeError,
+  PluginRuntimeService,
+  type PluginRuntimeWorkerOptions
+} from "@engineering-os/plugin-runtime";
 import {
   PluginRegistryError,
   PluginRegistryService,
@@ -67,6 +73,12 @@ const registerLocalPluginRequestSchema = z
   })
   .strict();
 
+const pluginRuntimeControlRequestSchema = z
+  .object({
+    pluginId: z.string().trim().min(1).max(256)
+  })
+  .strict();
+
 export interface BackendContext {
   readonly appDataDirectory: string;
   readonly configFilePath: string;
@@ -76,6 +88,7 @@ export interface BackendContext {
   readonly allowedOrigin: string | null;
   readonly database: ApplicationDatabase;
   readonly pluginRegistry: PluginRegistryService;
+  readonly pluginRuntime: PluginRuntimeService;
   readonly logger: ReturnType<typeof createLogger>;
   flushLogs(): Promise<void>;
 }
@@ -188,6 +201,15 @@ const ensureDirectory = async (path: string) => {
   await mkdir(path, { recursive: true });
 };
 
+const canAccessPath = async (path: string): Promise<boolean> => {
+  try {
+    await access(path, fsConstants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const readOptionalFile = async (path: string): Promise<string | null> => {
   try {
     return await readFile(path, "utf8");
@@ -221,6 +243,10 @@ const asPublicError = (
     ? new BackendPublicError(error.code, error.message, error.statusCode, {
         cause: error.cause ?? error
       })
+    : error instanceof PluginRuntimeError
+      ? new BackendPublicError(error.code, error.message, error.statusCode, {
+          cause: error.cause ?? error
+        })
     : 
   error instanceof BackendPublicError
     ? error
@@ -649,6 +675,27 @@ const loadPersistedConfig = async (
   return backupConfig;
 };
 
+const resolvePluginRuntimeWorkerOptions =
+  async (): Promise<PluginRuntimeWorkerOptions> => {
+    const currentModuleDirectory = dirname(fileURLToPath(import.meta.url));
+    const builtWorkerPath = join(currentModuleDirectory, "plugin-runtime-worker.js");
+
+    if (await canAccessPath(builtWorkerPath)) {
+      return {
+        entryPointPath: builtWorkerPath,
+        cwd: currentModuleDirectory
+      };
+    }
+
+    return {
+      entryPointPath: fileURLToPath(
+        new URL("./plugin-runtime-worker.ts", import.meta.url)
+      ),
+      execArgv: ["--import", "tsx"],
+      cwd: currentModuleDirectory
+    };
+  };
+
 export const createBackendContext = async (
   appDataDirectory = getAppDataDirectory(),
   authToken = getBackendAuthToken(),
@@ -669,11 +716,17 @@ export const createBackendContext = async (
     transport: fileLogTransport
   });
   const database = new ApplicationDatabase(databaseFilePath, logger);
+  const pluginRegistryRepository = new SqlitePluginRegistryRepository(database);
   const pluginRegistry = new PluginRegistryService({
-    repository: new SqlitePluginRegistryRepository(database),
+    repository: pluginRegistryRepository,
     logger,
     engineeringOsVersion: getEngineeringOsVersion(),
     installationsRootPath: pluginsDirectoryPath
+  });
+  const pluginRuntime = new PluginRuntimeService({
+    pluginResolver: pluginRegistry,
+    logger,
+    worker: await resolvePluginRuntimeWorkerOptions()
   });
   database.runMigrations();
   database.setMetadata("database_status", "ready");
@@ -687,6 +740,7 @@ export const createBackendContext = async (
     allowedOrigin,
     database,
     pluginRegistry,
+    pluginRuntime,
     logger,
     flushLogs: () => fileLogTransport.flush()
   };
@@ -696,8 +750,11 @@ export const createDesktopBackendHandler =
   (context: BackendContext) =>
   async (request: IncomingMessage, response: ServerResponse) => {
     applyCorsHeaders(response, request, context);
+    const requestUrl = request.url
+      ? new URL(request.url, "http://desktop-backend.local")
+      : null;
 
-    if (!request.url || !request.method) {
+    if (!requestUrl || !request.method) {
       writeError(
         response,
         "BACKEND_REQUEST_INVALID",
@@ -716,7 +773,7 @@ export const createDesktopBackendHandler =
     try {
       validateAuthorization(request, context.authToken);
 
-      if (request.method === "GET" && request.url === "/health") {
+      if (request.method === "GET" && requestUrl.pathname === "/health") {
         writeJson(
           response,
           createLocalServicesStatus(context.database.getHealth(), context)
@@ -724,14 +781,14 @@ export const createDesktopBackendHandler =
         return;
       }
 
-      if (request.method === "GET" && request.url === "/config") {
+      if (request.method === "GET" && requestUrl.pathname === "/config") {
         writeJson(response, {
           serializedConfig: await loadPersistedConfig(context)
         });
         return;
       }
 
-      if (request.method === "PUT" && request.url === "/config") {
+      if (request.method === "PUT" && requestUrl.pathname === "/config") {
         const { serializedConfig } = await readJsonBody<{
           readonly serializedConfig: string;
         }>(request, MAX_CONFIG_BYTES);
@@ -746,12 +803,12 @@ export const createDesktopBackendHandler =
         return;
       }
 
-      if (request.method === "GET" && request.url === "/sessions") {
+      if (request.method === "GET" && requestUrl.pathname === "/sessions") {
         writeJson(response, { sessions: context.database.listSessions() });
         return;
       }
 
-      if (request.method === "POST" && request.url === "/sessions") {
+      if (request.method === "POST" && requestUrl.pathname === "/sessions") {
         const { session } = await readJsonBody<{
           readonly session: EngineeringSession;
         }>(request, MAX_SESSION_BYTES);
@@ -763,7 +820,7 @@ export const createDesktopBackendHandler =
         return;
       }
 
-      if (request.method === "POST" && request.url === "/logs") {
+      if (request.method === "POST" && requestUrl.pathname === "/logs") {
         const { entry } = await readJsonBody<{
           readonly entry: PersistedLogEntry;
         }>(request, MAX_LOG_ENTRY_BYTES);
@@ -774,14 +831,17 @@ export const createDesktopBackendHandler =
         return;
       }
 
-      if (request.method === "GET" && request.url === "/plugins") {
+      if (request.method === "GET" && requestUrl.pathname === "/plugins") {
         writeJson(response, {
           plugins: context.pluginRegistry.listInstalledPlugins()
         });
         return;
       }
 
-      if (request.method === "POST" && request.url === "/plugins/register-local") {
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/plugins/register-local"
+      ) {
         const { packagePath } = await readValidatedJsonBody(
           request,
           MAX_JSON_PAYLOAD_BYTES,
@@ -795,6 +855,59 @@ export const createDesktopBackendHandler =
           plugin: await context.pluginRegistry.registerLocalPluginPackage(
             packagePath
           )
+        });
+        return;
+      }
+
+      if (request.method === "GET" && requestUrl.pathname === "/plugins/runtime") {
+        const pluginId = requestUrl.searchParams.get("pluginId")?.trim();
+
+        if (!pluginId) {
+          throw new BackendPublicError(
+            "PLUGIN_RUNTIME_REQUEST_INVALID",
+            "Plugin runtime request is invalid.",
+            400
+          );
+        }
+
+        writeJson(response, {
+          runtime: await context.pluginRuntime.inspectPluginHealth(pluginId)
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/plugins/runtime/start"
+      ) {
+        const { pluginId } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          pluginRuntimeControlRequestSchema,
+          "PLUGIN_RUNTIME_REQUEST_INVALID",
+          "Plugin runtime request is invalid."
+        );
+
+        writeJson(response, {
+          runtime: await context.pluginRuntime.startPlugin(pluginId)
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/plugins/runtime/stop"
+      ) {
+        const { pluginId } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          pluginRuntimeControlRequestSchema,
+          "PLUGIN_RUNTIME_REQUEST_INVALID",
+          "Plugin runtime request is invalid."
+        );
+
+        writeJson(response, {
+          runtime: await context.pluginRuntime.stopPlugin(pluginId)
         });
         return;
       }
@@ -889,6 +1002,7 @@ export const startDesktopBackendServer = async (
     authToken: context.authToken,
     async close() {
       await context.flushLogs();
+      await context.pluginRuntime.dispose();
       await closeServer(server, sockets);
       context.database.close();
     }

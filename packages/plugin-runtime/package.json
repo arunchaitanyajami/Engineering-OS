@@ -1,0 +1,19 @@
+{
+  "name": "@engineering-os/plugin-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@engineering-os/contracts": "workspace:*",
+    "@engineering-os/logger": "workspace:*",
+    "@engineering-os/plugin-registry": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests --ext .ts --no-error-on-unmatched-pattern"
+  }
+}

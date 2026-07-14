@@ -99,4 +99,4 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Tauri desktop build smoke test
-        run: pnpm tauri build --bundles none
+        run: pnpm tauri build --no-bundle

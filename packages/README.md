@@ -9,6 +9,7 @@ Milestone 0 packages:
 - `config`
 - `logger`
 - `database`
+- `platform`
 - `security`
 - `events`
 - `ui`

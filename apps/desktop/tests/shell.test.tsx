@@ -6,17 +6,20 @@ import { describe, expect, it } from "vitest";
 import App from "../src/App";
 
 describe("desktop shell", () => {
-  it("shows the Engineering OS shell screen", () => {
+  it("shows the Engineering OS shell screen", async () => {
     render(<App />);
 
     expect(
-      screen.getByRole("heading", { name: "Desktop Shell" })
+      await screen.findByRole("heading", { name: "Engineering OS" })
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/Milestone 0 now validates the monorepo/i)
+      screen.getByText("Desktop Shell")
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("textbox", { name: "Chat input" })
+      screen.getByText(/Start a new engineering session/i)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Command Palette" })
     ).toBeInTheDocument();
   });
 });

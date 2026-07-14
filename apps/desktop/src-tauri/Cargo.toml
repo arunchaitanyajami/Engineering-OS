@@ -9,7 +9,9 @@ edition = "2021"
 tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 tauri = { version = "2.11.5", features = [] }
+webbrowser = "1.0.6"
 
 [features]
 default = ["custom-protocol"]

@@ -19,6 +19,9 @@ export default defineConfig({
       "@engineering-os/database": fileURLToPath(
         new URL("./packages/database/src/index.ts", import.meta.url)
       ),
+      "@engineering-os/platform": fileURLToPath(
+        new URL("./packages/platform/src/index.ts", import.meta.url)
+      ),
       "@engineering-os/security": fileURLToPath(
         new URL("./packages/security/src/index.ts", import.meta.url)
       ),
@@ -38,11 +41,13 @@ export default defineConfig({
       "packages/*/tests/**/*.test.ts",
       "packages/*/tests/**/*.test.tsx",
       "packages/*/tests/**/*.integration.test.ts",
+      "apps/desktop/tests/**/*.test.ts",
       "apps/desktop/tests/**/*.test.tsx"
     ],
     environment: "node",
     environmentMatchGlobs: [
       ["packages/ui/tests/**/*.test.tsx", "jsdom"],
+      ["apps/desktop/tests/**/*.test.ts", "jsdom"],
       ["apps/desktop/tests/**/*.test.tsx", "jsdom"]
     ]
   }

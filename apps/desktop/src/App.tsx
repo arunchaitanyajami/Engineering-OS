@@ -1,61 +1,63 @@
-import {
-  PanelCard,
-  SidebarNavigation,
-  type NavigationItem
-} from "@engineering-os/ui";
+import { ApplicationConfigStore } from "@engineering-os/config";
+import { createLogger } from "@engineering-os/logger";
+import { Button, ErrorState, LoadingState } from "@engineering-os/ui";
 
-const navigationItems: readonly NavigationItem[] = [
-  { id: "plugins", label: "Plugins" },
-  { id: "agents", label: "Agents" },
-  { id: "workflows", label: "Workflows" },
-  { id: "memory", label: "Memory" },
-  { id: "settings", label: "Settings" }
-];
+import { RootErrorBoundary } from "./app/root-error-boundary";
+import { TauriDesktopPlatform } from "./platform/tauri-desktop-platform";
+import { AppRouter } from "./routes/router";
+import { BrowserConfigStorage } from "./services/browser-config-storage";
+import {
+  ApplicationStoreProvider,
+  useApplicationActions,
+  useApplicationState
+} from "./stores/application-store";
+
+const configStore = new ApplicationConfigStore(new BrowserConfigStorage());
+const platform = new TauriDesktopPlatform();
+const logger = createLogger({
+  component: "desktop-shell"
+});
+
+function ApplicationBootstrap() {
+  const { retryInitialization } = useApplicationActions();
+  const { initializationState } = useApplicationState();
+
+  if (initializationState.status === "failed") {
+    return (
+      <div className="app-root-fallback">
+        <ErrorState
+          title="Initialization failed"
+          description={initializationState.error.userMessage}
+          action={<Button onClick={retryInitialization}>Retry</Button>}
+        />
+      </div>
+    );
+  }
+
+  if (initializationState.status !== "ready") {
+    return (
+      <div className="app-root-fallback">
+        <LoadingState
+          title="Starting Engineering OS"
+          description={`Current stage: ${initializationState.status}`}
+        />
+      </div>
+    );
+  }
+
+  return <AppRouter />;
+}
 
 export default function App() {
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div>
-          <p className="eyebrow">Engineering OS</p>
-          <h1>Desktop Shell</h1>
-          <p className="muted">
-            Milestone 0 establishes the workspace, architecture, and app
-            surface.
-          </p>
-        </div>
-
-        <SidebarNavigation items={navigationItems} />
-      </aside>
-
-      <main className="workspace">
-        <PanelCard eyebrow="Workspace" title="AI-native engineering platform">
-          <p className="muted">
-            The first MVP flow will connect GitHub and run a structured PR
-            review workflow from the desktop application.
-          </p>
-        </PanelCard>
-
-        <PanelCard eyebrow="Chat" title="Desktop shell readiness">
-          <div className="message">
-            <strong>System</strong>
-            <p>
-              Welcome to Engineering OS. Milestone 0 now validates the monorepo,
-              contracts, configuration, logging, database migrations, and test
-              infrastructure.
-            </p>
-          </div>
-
-          <label className="composer">
-            <span className="composer-label">Ask a question</span>
-            <textarea
-              placeholder="Example: Review PR 123"
-              rows={5}
-              aria-label="Chat input"
-            />
-          </label>
-        </PanelCard>
-      </main>
-    </div>
+    <RootErrorBoundary>
+      <ApplicationStoreProvider
+        configStore={configStore}
+        logger={logger}
+        platform={platform}
+      >
+        <ApplicationBootstrap />
+      </ApplicationStoreProvider>
+    </RootErrorBoundary>
   );
 }

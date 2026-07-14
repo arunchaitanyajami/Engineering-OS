@@ -32,6 +32,7 @@ import {
   localPluginManifestFileNames,
   type PluginInstallationState
 } from "./domain.js";
+import { PluginRegistryError } from "./errors.js";
 import { calculateManagedInstallationHash } from "./integrity.js";
 import type { PluginRegistryRepository } from "./repository.js";
 
@@ -323,18 +324,6 @@ const createInstalledPlugin = (
     lastError: null
   };
 };
-
-export class PluginRegistryError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-    readonly statusCode: number,
-    readonly cause?: unknown
-  ) {
-    super(message, cause ? { cause } : undefined);
-    this.name = "PluginRegistryError";
-  }
-}
 
 export interface PluginRegistryServiceOptions {
   readonly repository: PluginRegistryRepository;

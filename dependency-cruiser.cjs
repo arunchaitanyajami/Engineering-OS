@@ -37,7 +37,7 @@ module.exports = {
         path: "^packages/contracts"
       },
       to: {
-        path: "^packages/(?!shared)"
+        path: "^packages/(?!shared|contracts)"
       }
     },
     {

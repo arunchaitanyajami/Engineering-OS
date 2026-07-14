@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 
-import { PluginRegistryError } from "./service.js";
+import { PluginRegistryError } from "./errors.js";
 
 export const calculateManagedInstallationHash = async (
   rootPath: string

@@ -5,7 +5,11 @@ module.exports = {
     doNotFollow: {
       path: "node_modules"
     },
-    includeOnly: "^apps|^packages"
+    includeOnly:
+      "^(apps/[^/]+/(src|tests|src-tauri/src)|apps/[^/]+/(vite|playwright)\\.config\\.ts|packages/[^/]+/(src|tests))",
+    exclude: {
+      path: "(^|/)(dist|target|coverage|test-results|playwright-report)/"
+    }
   },
   forbidden: [
     {

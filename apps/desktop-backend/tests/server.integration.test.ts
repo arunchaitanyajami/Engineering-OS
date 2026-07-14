@@ -1,4 +1,12 @@
-import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  realpath,
+  readFile,
+  rm,
+  unlink,
+  writeFile
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,6 +22,48 @@ describe("desktop backend server", () => {
   const allowedOrigin = "http://127.0.0.1:1420";
   let appDataDirectory: string;
   let runtime: StartedDesktopBackendServer | null = null;
+
+  const createLocalPluginPackage = async (
+    rootDirectory: string,
+    options: {
+      readonly pluginId?: string;
+      readonly engineeringOsRange?: string;
+    } = {}
+  ) => {
+    const packageDirectory = await mkdtemp(join(rootDirectory, "plugin-package-"));
+
+    await mkdir(join(packageDirectory, "dist/backend"), { recursive: true });
+    await writeFile(join(packageDirectory, "dist/backend/index.js"), "export {};\n");
+    await writeFile(
+      join(packageDirectory, "engineering-os.plugin.json"),
+      JSON.stringify(
+        {
+          schemaVersion: "1",
+          id: options.pluginId ?? "com.engineering-os.filesystem",
+          name: "Filesystem Plugin",
+          version: "0.1.0",
+          description: "Reference local plugin package for backend integration tests.",
+          publisher: {
+            name: "Engineering OS"
+          },
+          engines: {
+            engineeringOs: options.engineeringOsRange ?? ">=0.1.0"
+          },
+          entrypoints: {
+            backend: "./dist/backend/index.js"
+          },
+          capabilities: [],
+          permissions: [],
+          mcp: []
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    return packageDirectory;
+  };
 
   const startRuntime = async () => {
     runtime = await startDesktopBackendServer({
@@ -59,7 +109,7 @@ describe("desktop backend server", () => {
       database: {
         ok: true,
         status: "ready",
-        migrationVersion: 2,
+        migrationVersion: 3,
         databasePath: runtime.context.databaseFilePath
       },
       configFilePath: runtime.context.configFilePath,
@@ -348,10 +398,76 @@ describe("desktop backend server", () => {
 
     expect(context.database.getHealth()).toMatchObject({
       ok: true,
-      migrationVersion: 2,
+      migrationVersion: 3,
       databasePath: context.databaseFilePath
     });
 
+    await context.flushLogs();
     context.database.close();
+  });
+
+  it("registers local plugin packages and lists installed plugins", async () => {
+    runtime = await startRuntime();
+    const packageDirectory = await createLocalPluginPackage(appDataDirectory);
+    const resolvedPackageDirectory = await realpath(packageDirectory);
+
+    const registerResponse = await fetch(
+      `${runtime.baseUrl}/plugins/register-local`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({ packagePath: packageDirectory })
+      }
+    );
+
+    expect(registerResponse.status).toBe(200);
+    await expect(registerResponse.json()).resolves.toMatchObject({
+      plugin: {
+        pluginId: "com.engineering-os.filesystem",
+        installPath: resolvedPackageDirectory,
+        state: "installed",
+        enabled: false
+      }
+    });
+
+    const listResponse = await fetch(`${runtime.baseUrl}/plugins`, {
+      headers: authenticatedHeaders()
+    });
+
+    expect(listResponse.status).toBe(200);
+    await expect(listResponse.json()).resolves.toMatchObject({
+      plugins: [
+        {
+          pluginId: "com.engineering-os.filesystem",
+          installPath: resolvedPackageDirectory,
+          state: "installed",
+          enabled: false
+        }
+      ]
+    });
+  });
+
+  it("rejects incompatible plugin packages during registration", async () => {
+    runtime = await startRuntime();
+    const packageDirectory = await createLocalPluginPackage(appDataDirectory, {
+      engineeringOsRange: ">=0.2.0"
+    });
+
+    const response = await fetch(`${runtime.baseUrl}/plugins/register-local`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({ packagePath: packageDirectory })
+    });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      code: "PLUGIN_VERSION_INCOMPATIBLE",
+      message:
+        "Plugin 'com.engineering-os.filesystem' requires Engineering OS '>=0.2.0' but current version is '0.1.0'."
+    });
   });
 });

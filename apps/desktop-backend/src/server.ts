@@ -16,6 +16,10 @@ import {
   type LogTransport
 } from "@engineering-os/logger";
 import {
+  PluginRegistryError,
+  PluginRegistryService
+} from "@engineering-os/plugin-registry";
+import {
   ApplicationDatabase,
   type ApplicationDatabaseHealth
 } from "@engineering-os/database";
@@ -34,6 +38,7 @@ const MAX_CONFIG_BYTES = 128 * 1024;
 const MAX_SESSION_BYTES = 16 * 1024;
 const MAX_LOG_ENTRY_BYTES = 64 * 1024;
 const MAX_JSON_PAYLOAD_BYTES = 256 * 1024;
+const MAX_PLUGIN_PACKAGE_PATH_BYTES = 8 * 1024;
 const SHUTDOWN_TIMEOUT_MS = 1_000;
 const READY_MESSAGE_PREFIX = "ENGINEERING_OS_BACKEND_READY ";
 const ALLOWED_TAURI_ORIGINS = new Set([
@@ -54,6 +59,7 @@ export interface BackendContext {
   readonly authToken: string;
   readonly allowedOrigin: string | null;
   readonly database: ApplicationDatabase;
+  readonly pluginRegistry: PluginRegistryService;
   readonly logger: ReturnType<typeof createLogger>;
   flushLogs(): Promise<void>;
 }
@@ -156,6 +162,9 @@ export const getAllowedOrigin = (): string | null => {
   return candidate ? candidate : null;
 };
 
+export const getEngineeringOsVersion = (): string =>
+  process.env.EOS_APPLICATION_VERSION?.trim() || "0.1.0";
+
 const ensureDirectory = async (path: string) => {
   await mkdir(path, { recursive: true });
 };
@@ -189,6 +198,11 @@ const asPublicError = (
   fallbackMessage = "Desktop backend request failed.",
   fallbackStatusCode = 500
 ): BackendPublicError =>
+  error instanceof PluginRegistryError
+    ? new BackendPublicError(error.code, error.message, error.statusCode, {
+        cause: error.cause ?? error
+      })
+    : 
   error instanceof BackendPublicError
     ? error
     : new BackendPublicError(
@@ -351,6 +365,24 @@ const validateLogEntry = (entry: PersistedLogEntry) => {
       "LOG_ENTRY_INVALID",
       "Log scope and message are required.",
       400
+    );
+  }
+};
+
+const validatePluginPackagePath = (packagePath: string) => {
+  if (!packagePath.trim()) {
+    throw new BackendPublicError(
+      "PLUGIN_PACKAGE_PATH_INVALID",
+      "Plugin package path is required.",
+      400
+    );
+  }
+
+  if (packagePath.length > MAX_PLUGIN_PACKAGE_PATH_BYTES) {
+    throw new BackendPublicError(
+      "PLUGIN_PACKAGE_PATH_INVALID",
+      "Plugin package path exceeds the allowed size.",
+      413
     );
   }
 };
@@ -594,6 +626,11 @@ export const createBackendContext = async (
     transport: fileLogTransport
   });
   const database = new ApplicationDatabase(databaseFilePath, logger);
+  const pluginRegistry = new PluginRegistryService({
+    database,
+    logger,
+    engineeringOsVersion: getEngineeringOsVersion()
+  });
   database.runMigrations();
   database.setMetadata("database_status", "ready");
 
@@ -605,6 +642,7 @@ export const createBackendContext = async (
     authToken,
     allowedOrigin,
     database,
+    pluginRegistry,
     logger,
     flushLogs: () => fileLogTransport.flush()
   };
@@ -689,6 +727,27 @@ export const createDesktopBackendHandler =
         validateLogEntry(entry);
         await appendJsonLine(context.logFilePath, entry);
         writeJson(response, { ok: true });
+        return;
+      }
+
+      if (request.method === "GET" && request.url === "/plugins") {
+        writeJson(response, {
+          plugins: context.pluginRegistry.listInstalledPlugins()
+        });
+        return;
+      }
+
+      if (request.method === "POST" && request.url === "/plugins/register-local") {
+        const { packagePath } = await readJsonBody<{
+          readonly packagePath: string;
+        }>(request, MAX_PLUGIN_PACKAGE_PATH_BYTES);
+
+        validatePluginPackagePath(packagePath);
+        writeJson(response, {
+          plugin: await context.pluginRegistry.registerLocalPluginPackage(
+            packagePath
+          )
+        });
         return;
       }
 

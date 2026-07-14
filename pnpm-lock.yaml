@@ -122,6 +122,9 @@ importers:
       '@engineering-os/platform':
         specifier: workspace:*
         version: link:../../packages/platform
+      '@engineering-os/plugin-registry':
+        specifier: workspace:*
+        version: link:../../packages/plugin-registry
 
   packages/config:
     dependencies:
@@ -162,6 +165,9 @@ importers:
 
   packages/database:
     dependencies:
+      '@engineering-os/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@engineering-os/logger':
         specifier: workspace:*
         version: link:../logger
@@ -185,6 +191,24 @@ importers:
         version: link:../shared
 
   packages/platform: {}
+
+  packages/plugin-registry:
+    dependencies:
+      '@engineering-os/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@engineering-os/database':
+        specifier: workspace:*
+        version: link:../database
+      '@engineering-os/logger':
+        specifier: workspace:*
+        version: link:../logger
+      '@types/semver':
+        specifier: ^7.7.1
+        version: 7.7.1
+      semver:
+        specifier: ^7.8.5
+        version: 7.8.5
 
   packages/security:
     dependencies:

@@ -1009,11 +1009,32 @@ export const createDesktopBackendHandler =
         const executionId = requestUrl.searchParams.get("executionId")?.trim();
 
         if (!executionId) {
-          throw new BackendPublicError(
-            "MCP_GATEWAY_REQUEST_INVALID",
-            "MCP gateway request is invalid.",
-            400
-          );
+          const state = requestUrl.searchParams.get("state")?.trim();
+          const toolId = requestUrl.searchParams.get("toolId")?.trim();
+          const registrationId = requestUrl.searchParams
+            .get("registrationId")
+            ?.trim();
+          const serverId = requestUrl.searchParams.get("serverId")?.trim();
+          const correlationId = requestUrl.searchParams
+            .get("correlationId")
+            ?.trim();
+          const limit = requestUrl.searchParams.get("limit")?.trim();
+          const cursor = requestUrl.searchParams.get("cursor")?.trim();
+
+          writeJson(response, {
+            ...context.mcpGateway.listToolExecutionPage({
+              ...(state === "running" || state === "completed"
+                ? { state }
+                : {}),
+              ...(toolId ? { toolId } : {}),
+              ...(registrationId ? { registrationId } : {}),
+              ...(serverId ? { serverId } : {}),
+              ...(correlationId ? { correlationId } : {}),
+              ...(limit ? { limit: Number(limit) } : {}),
+              ...(cursor ? { cursor } : {})
+            })
+          });
+          return;
         }
 
         writeJson(response, {

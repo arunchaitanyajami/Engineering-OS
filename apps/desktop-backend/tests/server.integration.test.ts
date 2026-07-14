@@ -1781,6 +1781,249 @@ describe("desktop backend server", () => {
     });
   });
 
+  it("lists tracked MCP tool executions through the backend API with rich filters and limit support", async () => {
+    runtime = await startRuntime();
+    const { serverDirectory } =
+      await createLocalCommandServer(appDataDirectory);
+
+    await fetch(`${runtime.baseUrl}/mcp/servers/register`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        registration: {
+          id: "listed-filesystem",
+          source: {
+            type: "user"
+          },
+          name: "Listed Filesystem",
+          transport: {
+            type: "stdio",
+            command: "node",
+            args: ["./index.js"],
+            cwd: serverDirectory
+          },
+          enabled: true,
+          timeoutMs: 10_000
+        }
+      })
+    });
+    await fetch(`${runtime.baseUrl}/mcp/servers/start`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        registrationId: "user:listed-filesystem"
+      })
+    });
+
+    const runningResponse = await fetch(
+      `${runtime.baseUrl}/mcp/tool-executions/start`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({
+          toolId: "user.listed-filesystem.tool.read_workspace",
+          arguments: {
+            mode: "hang"
+          },
+          executionContext: {
+            actor: {
+              type: "workflow",
+              id: "mcp-list"
+            },
+            correlationId: "corr-running",
+            approvalMode: "none"
+          }
+        })
+      }
+    );
+    const runningExecution = (await runningResponse.json()) as {
+      readonly execution: {
+        readonly executionId: string;
+      };
+    };
+
+    const completedResponse = await fetch(
+      `${runtime.baseUrl}/mcp/tool-executions/start`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({
+          toolId: "user.listed-filesystem.tool.read_workspace",
+          arguments: {
+            path: "/workspace/README.md"
+          },
+          executionContext: {
+            actor: {
+              type: "workflow",
+              id: "mcp-list"
+            },
+            correlationId: "corr-completed",
+            approvalMode: "none"
+          }
+        })
+      }
+    );
+    const completedExecution = (await completedResponse.json()) as {
+      readonly execution: {
+        readonly executionId: string;
+      };
+    };
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const listResponse = await fetch(`${runtime.baseUrl}/mcp/tool-executions`, {
+      headers: authenticatedHeaders()
+    });
+
+    expect(listResponse.status).toBe(200);
+    await expect(listResponse.json()).resolves.toMatchObject({
+      executions: [
+        {
+          executionId: completedExecution.execution.executionId
+        },
+        {
+          executionId: runningExecution.execution.executionId
+        }
+      ]
+    });
+
+    const runningListResponse = await fetch(
+      `${runtime.baseUrl}/mcp/tool-executions?state=running`,
+      {
+        headers: authenticatedHeaders()
+      }
+    );
+
+    expect(runningListResponse.status).toBe(200);
+    await expect(runningListResponse.json()).resolves.toMatchObject({
+      executions: [
+        {
+          executionId: runningExecution.execution.executionId,
+          state: "running"
+        }
+      ]
+    });
+
+    const completedListResponse = await fetch(
+      `${runtime.baseUrl}/mcp/tool-executions?state=completed`,
+      {
+        headers: authenticatedHeaders()
+      }
+    );
+
+    expect(completedListResponse.status).toBe(200);
+    await expect(completedListResponse.json()).resolves.toMatchObject({
+      executions: [
+        {
+          executionId: completedExecution.execution.executionId,
+          state: "completed",
+          result: {
+            status: "success"
+          }
+        }
+      ]
+    });
+
+    const correlationListResponse = await fetch(
+      `${runtime.baseUrl}/mcp/tool-executions?correlationId=corr-completed`,
+      {
+        headers: authenticatedHeaders()
+      }
+    );
+
+    expect(correlationListResponse.status).toBe(200);
+    await expect(correlationListResponse.json()).resolves.toMatchObject({
+      executions: [
+        {
+          executionId: completedExecution.execution.executionId,
+          request: {
+            executionContext: {
+              correlationId: "corr-completed"
+            }
+          }
+        }
+      ]
+    });
+
+    const scopedListResponse = await fetch(
+      `${runtime.baseUrl}/mcp/tool-executions?registrationId=user:listed-filesystem&serverId=listed-filesystem&state=running`,
+      {
+        headers: authenticatedHeaders()
+      }
+    );
+
+    expect(scopedListResponse.status).toBe(200);
+    await expect(scopedListResponse.json()).resolves.toMatchObject({
+      executions: [
+        {
+          executionId: runningExecution.execution.executionId,
+          registrationId: "user:listed-filesystem",
+          serverId: "listed-filesystem",
+          state: "running"
+        }
+      ]
+    });
+
+    const limitedListResponse = await fetch(
+      `${runtime.baseUrl}/mcp/tool-executions?limit=1`,
+      {
+        headers: authenticatedHeaders()
+      }
+    );
+
+    expect(limitedListResponse.status).toBe(200);
+    const limitedListBody = (await limitedListResponse.json()) as {
+      readonly executions: readonly {
+        readonly executionId: string;
+      }[];
+      readonly nextCursor?: string;
+    };
+
+    expect(limitedListBody).toMatchObject({
+      executions: [
+        {
+          executionId: completedExecution.execution.executionId
+        }
+      ],
+      nextCursor: completedExecution.execution.executionId
+    });
+    expect(limitedListBody.nextCursor).toBeDefined();
+
+    const nextPageResponse = await fetch(
+      `${runtime.baseUrl}/mcp/tool-executions?limit=1&cursor=${limitedListBody.nextCursor ?? completedExecution.execution.executionId}`,
+      {
+        headers: authenticatedHeaders()
+      }
+    );
+
+    expect(nextPageResponse.status).toBe(200);
+    await expect(nextPageResponse.json()).resolves.toMatchObject({
+      executions: [
+        {
+          executionId: runningExecution.execution.executionId
+        }
+      ]
+    });
+
+    await fetch(`${runtime.baseUrl}/mcp/tool-executions/cancel`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        executionId: runningExecution.execution.executionId
+      })
+    });
+  });
+
   it("rejects non-user MCP registration requests through the backend API", async () => {
     runtime = await startRuntime();
     const { serverDirectory } =

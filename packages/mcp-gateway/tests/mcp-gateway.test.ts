@@ -949,6 +949,167 @@ describe("McpGatewayService", () => {
     });
   });
 
+  it("lists tracked MCP tool executions with rich filtering and limit support", async () => {
+    const { fixturesDirectory, gateway } = await createGateway();
+    const { serverDirectory } =
+      await createLocalCommandServer(fixturesDirectory);
+
+    gateway.registerServer({
+      id: "local-filesystem",
+      source: {
+        type: "user"
+      },
+      name: "Local Filesystem",
+      transport: {
+        type: "stdio",
+        command: "node",
+        args: ["./index.js"],
+        cwd: serverDirectory
+      },
+      enabled: true,
+      timeoutMs: 10_000
+    });
+    await gateway.startServer("user:local-filesystem");
+
+    const runningExecution = gateway.startToolExecution({
+      toolId: "user.local-filesystem.tool.read_workspace",
+      arguments: {
+        mode: "hang"
+      },
+      executionContext: {
+        actor: {
+          type: "workflow",
+          id: "mcp-list"
+        },
+        correlationId: "corr-running",
+        approvalMode: "none"
+      }
+    });
+
+    const completedExecution = gateway.startToolExecution({
+      toolId: "user.local-filesystem.tool.read_workspace",
+      arguments: {
+        path: "/workspace/README.md"
+      },
+      executionContext: {
+        actor: {
+          type: "workflow",
+          id: "mcp-list"
+        },
+        correlationId: "corr-completed",
+        approvalMode: "none"
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(gateway.listToolExecutions()).toMatchObject([
+      {
+        executionId: completedExecution.executionId
+      },
+      {
+        executionId: runningExecution.executionId
+      }
+    ]);
+    expect(
+      gateway.listToolExecutions({
+        state: "completed"
+      })
+    ).toMatchObject([
+      {
+        executionId: completedExecution.executionId,
+        state: "completed",
+        result: {
+          status: "success"
+        }
+      }
+    ]);
+    expect(
+      gateway.listToolExecutions({
+        state: "running"
+      })
+    ).toMatchObject([
+      {
+        executionId: runningExecution.executionId,
+        state: "running"
+      }
+    ]);
+    expect(
+      gateway.listToolExecutions({
+        registrationId: "user:local-filesystem"
+      })
+    ).toHaveLength(2);
+    expect(
+      gateway.listToolExecutions({
+        serverId: "local-filesystem"
+      })
+    ).toHaveLength(2);
+    expect(
+      gateway.listToolExecutions({
+        correlationId: "corr-completed"
+      })
+    ).toMatchObject([
+      {
+        executionId: completedExecution.executionId,
+        request: {
+          executionContext: {
+            correlationId: "corr-completed"
+          }
+        }
+      }
+    ]);
+    expect(
+      gateway.listToolExecutions({
+        registrationId: "user:local-filesystem",
+        serverId: "local-filesystem",
+        correlationId: "corr-running",
+        state: "running"
+      })
+    ).toMatchObject([
+      {
+        executionId: runningExecution.executionId,
+        state: "running"
+      }
+    ]);
+    expect(
+      gateway.listToolExecutions({
+        limit: 1
+      })
+    ).toMatchObject([
+      {
+        executionId: completedExecution.executionId
+      }
+    ]);
+    const firstPage = gateway.listToolExecutionPage({
+      limit: 1
+    });
+
+    expect(firstPage).toMatchObject({
+      executions: [
+        {
+          executionId: completedExecution.executionId
+        }
+      ],
+      nextCursor: completedExecution.executionId
+    });
+    expect(firstPage.nextCursor).toBeDefined();
+
+    expect(
+      gateway.listToolExecutionPage({
+        limit: 1,
+        cursor: firstPage.nextCursor ?? completedExecution.executionId
+      })
+    ).toMatchObject({
+      executions: [
+        {
+          executionId: runningExecution.executionId
+        }
+      ]
+    });
+
+    await gateway.cancelToolExecution(runningExecution.executionId);
+  });
+
   it("rejects unresolved secret references when starting stdio MCP servers", async () => {
     const { fixturesDirectory, pluginRegistry, gateway } =
       await createGateway();

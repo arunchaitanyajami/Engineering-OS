@@ -52,6 +52,24 @@ export interface McpGatewayToolExecutionOptions {
   readonly signal?: AbortSignal;
 }
 
+export interface McpToolExecutionListOptions {
+  readonly state?: McpToolExecutionRecord["state"];
+  readonly toolId?: string;
+  readonly registrationId?: string;
+  readonly serverId?: string;
+  readonly correlationId?: string;
+  readonly limit?: number;
+}
+
+export interface McpToolExecutionPageOptions extends McpToolExecutionListOptions {
+  readonly cursor?: string;
+}
+
+export interface McpToolExecutionPage {
+  readonly executions: readonly McpToolExecutionRecord[];
+  readonly nextCursor?: string;
+}
+
 export class McpGatewayError extends Error {
   constructor(
     readonly code: string,
@@ -270,6 +288,7 @@ const isAbortError = (error: unknown): boolean =>
   error.name === "AbortError";
 
 const MAX_RETAINED_TOOL_EXECUTIONS = 200;
+const TOOL_EXECUTION_RETENTION_MS = 15 * 60 * 1_000;
 
 const toPromptArgumentsSchema = (
   prompt: McpListedPrompt | undefined
@@ -602,6 +621,7 @@ export class McpGatewayService {
   }
 
   startToolExecution(request: ToolExecutionRequest): McpToolExecutionRecord {
+    this.pruneRetainedToolExecutions();
     const parsedRequest = toolExecutionRequestSchema.parse(request);
     const resolvedExecution = this.resolveToolExecution(parsedRequest);
     const createdExecutionId = randomUUID();
@@ -674,12 +694,47 @@ export class McpGatewayService {
   }
 
   getToolExecution(executionIdValue: string): McpToolExecutionRecord {
+    this.pruneRetainedToolExecutions();
     return this.requireToolExecution(executionIdValue).record;
+  }
+
+  listToolExecutions(
+    options: McpToolExecutionListOptions = {}
+  ): readonly McpToolExecutionRecord[] {
+    return this.listToolExecutionPage(options).executions;
+  }
+
+  listToolExecutionPage(
+    options: McpToolExecutionPageOptions = {}
+  ): McpToolExecutionPage {
+    this.pruneRetainedToolExecutions();
+    const limit = this.getToolExecutionListLimit(options.limit);
+    const executions = this.collectFilteredToolExecutions(options);
+    const startIndex = this.getToolExecutionPageStartIndex(
+      executions,
+      options.cursor
+    );
+    const pagedExecutions =
+      typeof limit === "number"
+        ? executions.slice(startIndex, startIndex + limit)
+        : executions.slice(startIndex);
+    const nextCursor =
+      typeof limit === "number" &&
+      startIndex + limit < executions.length &&
+      pagedExecutions.length > 0
+        ? pagedExecutions[pagedExecutions.length - 1]?.executionId
+        : undefined;
+
+    return {
+      executions: pagedExecutions,
+      ...(nextCursor ? { nextCursor } : {})
+    };
   }
 
   async cancelToolExecution(
     executionIdValue: string
   ): Promise<McpToolExecutionRecord> {
+    this.pruneRetainedToolExecutions();
     const parsedRequest = mcpToolExecutionControlRequestSchema.parse({
       executionId: executionIdValue
     });
@@ -1046,6 +1101,83 @@ export class McpGatewayService {
       : 30_000;
   }
 
+  private getToolExecutionListLimit(
+    limit: number | undefined
+  ): number | undefined {
+    if (limit === undefined) {
+      return undefined;
+    }
+
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new McpGatewayError(
+        "MCP_GATEWAY_TOOL_EXECUTION_LIST_LIMIT_INVALID",
+        "Execution list limit must be a positive integer.",
+        400
+      );
+    }
+
+    return Math.min(limit, MAX_RETAINED_TOOL_EXECUTIONS);
+  }
+
+  private collectFilteredToolExecutions(
+    options: McpToolExecutionListOptions
+  ): readonly McpToolExecutionRecord[] {
+    return [...this.toolExecutionOrder]
+      .reverse()
+      .map((executionIdValue) => this.toolExecutions.get(executionIdValue))
+      .filter(
+        (execution): execution is ManagedToolExecution =>
+          execution !== undefined
+      )
+      .map((execution) => execution.record)
+      .filter((execution) =>
+        options.state ? execution.state === options.state : true
+      )
+      .filter((execution) =>
+        options.toolId ? execution.toolId === options.toolId : true
+      )
+      .filter((execution) =>
+        options.registrationId
+          ? execution.registrationId === options.registrationId
+          : true
+      )
+      .filter((execution) =>
+        options.serverId ? execution.serverId === options.serverId : true
+      )
+      .filter((execution) =>
+        options.correlationId
+          ? execution.request.executionContext.correlationId ===
+            options.correlationId
+          : true
+      );
+  }
+
+  private getToolExecutionPageStartIndex(
+    executions: readonly McpToolExecutionRecord[],
+    cursor: string | undefined
+  ): number {
+    if (!cursor) {
+      return 0;
+    }
+
+    const parsedCursor = mcpToolExecutionControlRequestSchema.parse({
+      executionId: cursor
+    });
+    const cursorIndex = executions.findIndex(
+      (execution) => execution.executionId === parsedCursor.executionId
+    );
+
+    if (cursorIndex === -1) {
+      throw new McpGatewayError(
+        "MCP_GATEWAY_TOOL_EXECUTION_CURSOR_INVALID",
+        `Execution list cursor '${parsedCursor.executionId}' was not found for the current filter set.`,
+        400
+      );
+    }
+
+    return cursorIndex + 1;
+  }
+
   private requireToolExecution(executionIdValue: string): ManagedToolExecution {
     const parsedRequest = mcpToolExecutionControlRequestSchema.parse({
       executionId: executionIdValue
@@ -1064,6 +1196,36 @@ export class McpGatewayService {
   }
 
   private pruneRetainedToolExecutions(): void {
+    const retentionCutoff = Date.now() - TOOL_EXECUTION_RETENTION_MS;
+
+    for (const [executionIdValue, execution] of this.toolExecutions.entries()) {
+      if (execution.record.state !== "completed") {
+        continue;
+      }
+
+      const updatedAtTime = Date.parse(execution.record.updatedAt);
+
+      if (Number.isNaN(updatedAtTime) || updatedAtTime >= retentionCutoff) {
+        continue;
+      }
+
+      this.toolExecutions.delete(executionIdValue);
+    }
+
+    for (
+      let index = this.toolExecutionOrder.length - 1;
+      index >= 0;
+      index -= 1
+    ) {
+      const executionIdValue = this.toolExecutionOrder[index];
+
+      if (executionIdValue && this.toolExecutions.has(executionIdValue)) {
+        continue;
+      }
+
+      this.toolExecutionOrder.splice(index, 1);
+    }
+
     while (this.toolExecutions.size > MAX_RETAINED_TOOL_EXECUTIONS) {
       const nextExecutionId = this.toolExecutionOrder.shift();
 

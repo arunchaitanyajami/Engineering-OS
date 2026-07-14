@@ -1,14 +1,18 @@
 import {
   access,
+  lstat,
   mkdtemp,
   mkdir,
+  readdir,
   readFile,
   realpath,
   rm,
+  symlink,
   writeFile
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
+import { createHash } from "node:crypto";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -66,6 +70,39 @@ const createLocalPluginPackage = async (
   );
 
   return packageDirectory;
+};
+
+const hashDirectoryContents = async (rootPath: string): Promise<string> => {
+  const entries: string[] = [];
+
+  const collectFiles = async (currentPath: string) => {
+    const currentStats = await lstat(currentPath);
+
+    if (currentStats.isDirectory()) {
+      const children = await readdir(currentPath);
+
+      for (const child of children.sort((left, right) => left.localeCompare(right))) {
+        await collectFiles(join(currentPath, child));
+      }
+
+      return;
+    }
+
+    entries.push(currentPath);
+  };
+
+  await collectFiles(rootPath);
+
+  const hash = createHash("sha256");
+
+  for (const entry of entries) {
+    hash.update(relative(rootPath, entry));
+    hash.update("\n");
+    hash.update(await readFile(entry));
+    hash.update("\n");
+  }
+
+  return hash.digest("hex");
 };
 
 describe("PluginRegistryService", () => {
@@ -254,5 +291,104 @@ describe("PluginRegistryService", () => {
         "utf8"
       )
     ).resolves.toContain("export {}");
+  });
+
+  it("cleans up staged and final installation paths when copy fails", async () => {
+    const fixturesDirectory = await mkdtemp(
+      join(tmpdir(), "engineering-os-plugin-registry-")
+    );
+    directories.push(fixturesDirectory);
+
+    const database = new ApplicationDatabase(":memory:");
+    database.runMigrations();
+    databases.push(database);
+    const installationsRootPath = join(fixturesDirectory, "managed-plugins");
+
+    const registry = new PluginRegistryService({
+      repository: new SqlitePluginRegistryRepository(database),
+      logger: createLogger({ component: "plugin-registry-test" }),
+      engineeringOsVersion: "0.1.0",
+      installationsRootPath
+    });
+    const packageDirectory = await createLocalPluginPackage(fixturesDirectory, {
+      id: "com.engineering-os.slack"
+    });
+    const symlinkPath = join(packageDirectory, "dist/backend/unsafe-link.js");
+
+    await symlink(join(packageDirectory, "dist/backend/index.js"), symlinkPath);
+
+    await expect(
+      registry.registerLocalPluginPackage(packageDirectory)
+    ).rejects.toMatchObject({
+      code: "PLUGIN_SYMLINK_UNSUPPORTED",
+      statusCode: 400
+    });
+
+    await expect(
+      access(
+        join(
+          installationsRootPath,
+          "com.engineering-os.slack",
+          "0.1.0"
+        )
+      )
+    ).rejects.toThrow();
+    await expect(readdir(join(installationsRootPath, ".staging"))).resolves.toEqual(
+      []
+    );
+    expect(
+      new SqlitePluginRegistryRepository(database).findByPluginId(
+        "com.engineering-os.slack"
+      )
+    ).toBeNull();
+  });
+
+  it("serializes concurrent registration for the same plugin id", async () => {
+    const fixturesDirectory = await mkdtemp(
+      join(tmpdir(), "engineering-os-plugin-registry-")
+    );
+    directories.push(fixturesDirectory);
+
+    const database = new ApplicationDatabase(":memory:");
+    database.runMigrations();
+    databases.push(database);
+    const installationsRootPath = join(fixturesDirectory, "managed-plugins");
+
+    const registry = new PluginRegistryService({
+      repository: new SqlitePluginRegistryRepository(database),
+      logger: createLogger({ component: "plugin-registry-test" }),
+      engineeringOsVersion: "0.1.0",
+      installationsRootPath
+    });
+    const packageDirectory = await createLocalPluginPackage(fixturesDirectory, {
+      id: "com.engineering-os.jira"
+    });
+
+    const results = await Promise.allSettled([
+      registry.registerLocalPluginPackage(packageDirectory),
+      registry.registerLocalPluginPackage(packageDirectory)
+    ]);
+
+    const fulfilledResults = results.filter((result) => result.status === "fulfilled");
+    const rejectedResults = results.filter((result) => result.status === "rejected");
+
+    expect(fulfilledResults).toHaveLength(1);
+    expect(rejectedResults).toHaveLength(1);
+    expect(rejectedResults[0]?.reason).toMatchObject({
+      code: "PLUGIN_ALREADY_REGISTERED",
+      statusCode: 409
+    });
+
+    const installedPlugins = registry.listInstalledPlugins();
+
+    expect(installedPlugins).toHaveLength(1);
+    expect(installedPlugins[0]).toBeDefined();
+    expect(installedPlugins[0]?.pluginId).toBe("com.engineering-os.jira");
+    await expect(access(installedPlugins[0]!.installation.rootPath)).resolves.toBe(
+      undefined
+    );
+    await expect(
+      hashDirectoryContents(installedPlugins[0]!.installation.rootPath)
+    ).resolves.toBe(installedPlugins[0]!.installation.contentHash);
   });
 });

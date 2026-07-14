@@ -62,6 +62,7 @@ export interface PluginRegistryRepository {
   findAll(): readonly InstalledPlugin[];
   findByPluginId(pluginId: string): InstalledPlugin | null;
   save(plugin: InstalledPlugin): InstalledPlugin;
+  deleteByPluginId(pluginId: string): void;
 }
 
 export class SqlitePluginRegistryRepository
@@ -166,5 +167,11 @@ export class SqlitePluginRegistryRepository
     }
 
     return persistedPlugin;
+  }
+
+  deleteByPluginId(pluginId: string): void {
+    this.database.execute("DELETE FROM installed_plugins WHERE plugin_id = ?", [
+      pluginId
+    ]);
   }
 }

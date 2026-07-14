@@ -8,10 +8,11 @@ import {
   readdir,
   readFile,
   realpath,
+  rename,
   rm,
   stat
 } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 
 import {
   pluginManifestSchema,
@@ -97,7 +98,9 @@ const assertPathWithinPackage = (packagePath: string, candidatePath: string) => 
 
   if (
     relativePath === "" ||
-    (!relativePath.startsWith("..") && relativePath !== "..")
+    (!isAbsolute(relativePath) &&
+      relativePath !== ".." &&
+      !relativePath.startsWith(`..${sep}`))
   ) {
     return;
   }
@@ -380,6 +383,7 @@ export interface PluginRegistryServiceOptions {
 export class PluginRegistryService {
   private readonly logger: Logger;
   private readonly engineeringOsVersion: string;
+  private readonly installationLocks = new Map<string, Promise<void>>();
 
   constructor(private readonly options: PluginRegistryServiceOptions) {
     this.logger = options.logger.child({
@@ -405,78 +409,151 @@ export class PluginRegistryService {
     return this.options.repository.findAll();
   }
 
+  private async runWithInstallationLock<T>(
+    pluginId: string,
+    operation: () => Promise<T>
+  ): Promise<T> {
+    const activeLock = this.installationLocks.get(pluginId) ?? Promise.resolve();
+    let releaseLock: () => void = () => undefined;
+    const queuedLock = activeLock.then(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseLock = resolve;
+        })
+    );
+
+    this.installationLocks.set(pluginId, queuedLock);
+    await activeLock;
+
+    try {
+      return await operation();
+    } finally {
+      releaseLock();
+
+      if (this.installationLocks.get(pluginId) === queuedLock) {
+        this.installationLocks.delete(pluginId);
+      }
+    }
+  }
+
   async registerLocalPluginPackage(
     localPackagePath: string
   ): Promise<InstalledPlugin> {
     const inspectedPackage = await this.inspectLocalPluginPackage(localPackagePath);
-    const existingPlugin = this.options.repository.findByPluginId(
-      inspectedPackage.manifest.id
-    );
-
-    if (existingPlugin) {
-      throw new PluginRegistryError(
-        "PLUGIN_ALREADY_REGISTERED",
-        `Plugin '${inspectedPackage.manifest.id}' is already registered.`,
-        409
-      );
-    }
-
-    const installationRootPath = join(
-      this.options.installationsRootPath,
+    return this.runWithInstallationLock(
       inspectedPackage.manifest.id,
-      inspectedPackage.manifest.version
-    );
-
-    if (await canAccessPath(installationRootPath)) {
-      throw new PluginRegistryError(
-        "PLUGIN_INSTALLATION_ALREADY_EXISTS",
-        `Managed installation path '${installationRootPath}' already exists.`,
-        409
-      );
-    }
-
-    await copyDirectoryRejectingSymlinks(
-      inspectedPackage.source.path,
-      installationRootPath
-    );
-
-    try {
-      const copiedPackage = await inspectResolvedPluginPackage({
-        type: "local-directory",
-        path: installationRootPath
-      });
-
-      if (
-        JSON.stringify(copiedPackage.manifest) !==
-        JSON.stringify(inspectedPackage.manifest)
-      ) {
-        throw new PluginRegistryError(
-          "PLUGIN_INSTALLATION_VALIDATION_FAILED",
-          "Copied plugin contents did not match the validated source manifest.",
-          500
+      async () => {
+        const existingPlugin = this.options.repository.findByPluginId(
+          inspectedPackage.manifest.id
         );
+
+        if (existingPlugin) {
+          throw new PluginRegistryError(
+            "PLUGIN_ALREADY_REGISTERED",
+            `Plugin '${inspectedPackage.manifest.id}' is already registered.`,
+            409
+          );
+        }
+
+        const stagingRootPath = join(
+          this.options.installationsRootPath,
+          ".staging",
+          randomUUID()
+        );
+        const installationRootPath = join(
+          this.options.installationsRootPath,
+          inspectedPackage.manifest.id,
+          inspectedPackage.manifest.version
+        );
+
+        await mkdir(dirname(stagingRootPath), { recursive: true });
+
+        let finalPathCreated = false;
+
+        try {
+          if (await canAccessPath(installationRootPath)) {
+            throw new PluginRegistryError(
+              "PLUGIN_INSTALLATION_ALREADY_EXISTS",
+              `Managed installation path '${installationRootPath}' already exists.`,
+              409
+            );
+          }
+
+          await copyDirectoryRejectingSymlinks(
+            inspectedPackage.source.path,
+            stagingRootPath
+          );
+
+          const copiedPackage = await inspectResolvedPluginPackage({
+            type: "local-directory",
+            path: stagingRootPath
+          });
+
+          if (
+            JSON.stringify(copiedPackage.manifest) !==
+            JSON.stringify(inspectedPackage.manifest)
+          ) {
+            throw new PluginRegistryError(
+              "PLUGIN_INSTALLATION_VALIDATION_FAILED",
+              "Copied plugin contents did not match the validated source manifest.",
+              500
+            );
+          }
+
+          const contentHash = await hashDirectoryContents(stagingRootPath);
+          await mkdir(dirname(installationRootPath), { recursive: true });
+
+          try {
+            await rename(stagingRootPath, installationRootPath);
+          } catch (error) {
+            if (await canAccessPath(installationRootPath)) {
+              throw new PluginRegistryError(
+                "PLUGIN_INSTALLATION_ALREADY_EXISTS",
+                `Managed installation path '${installationRootPath}' already exists.`,
+                409,
+                error
+              );
+            }
+
+            throw error;
+          }
+
+          finalPathCreated = true;
+
+          try {
+            const installedPlugin = this.options.repository.save(
+              createInstalledPlugin(
+                copiedPackage,
+                inspectedPackage.source,
+                installationRootPath,
+                contentHash
+              )
+            );
+
+            this.logger.info("Registered managed local plugin package.", {
+              pluginId: installedPlugin.pluginId,
+              version: installedPlugin.manifest.version,
+              installRootPath: installedPlugin.installation.rootPath,
+              installationMode: installedPlugin.installation.mode
+            });
+
+            return installedPlugin;
+          } catch (error) {
+            this.options.repository.deleteByPluginId(inspectedPackage.manifest.id);
+            await rm(installationRootPath, { recursive: true, force: true });
+            throw error;
+          }
+        } catch (error) {
+          if (finalPathCreated) {
+            await rm(installationRootPath, { recursive: true, force: true });
+            this.options.repository.deleteByPluginId(inspectedPackage.manifest.id);
+          } else {
+            await rm(stagingRootPath, { recursive: true, force: true });
+          }
+
+          throw error;
+        }
       }
-
-      const installedPlugin = this.options.repository.save(
-        createInstalledPlugin(
-          copiedPackage,
-          inspectedPackage.source,
-          installationRootPath,
-          await hashDirectoryContents(installationRootPath)
-        )
-      );
-
-      this.logger.info("Registered managed local plugin package.", {
-        pluginId: installedPlugin.pluginId,
-        version: installedPlugin.manifest.version,
-        installRootPath: installedPlugin.installation.rootPath,
-        installationMode: installedPlugin.installation.mode
-      });
-
-      return installedPlugin;
-    } catch (error) {
-      await rm(installationRootPath, { recursive: true, force: true });
-      throw error;
-    }
+    );
   }
 }

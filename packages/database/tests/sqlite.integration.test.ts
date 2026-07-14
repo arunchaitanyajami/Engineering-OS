@@ -1,37 +1,42 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { SqliteDatabase } from "@engineering-os/database";
-import { createAuditEventFixture } from "@engineering-os/testing";
+import {
+  ApplicationDatabase,
+  applicationMigrations
+} from "@engineering-os/database";
 
-describe("SqliteDatabase", () => {
-  const databases: SqliteDatabase[] = [];
+describe("ApplicationDatabase", () => {
+  const databases: ApplicationDatabase[] = [];
 
   afterEach(() => {
     databases.forEach((database) => database.close());
     databases.length = 0;
   });
 
-  it("runs foundation migrations and records audit events", () => {
-    const database = new SqliteDatabase(":memory:");
+  it("runs milestone 1 migrations and persists sessions", () => {
+    const database = new ApplicationDatabase(":memory:");
     databases.push(database);
 
-    database.runMigrations();
-    database.recordAuditEvent(
-      createAuditEventFixture({
-        id: "audit-1",
-        action: "demo.record"
-      })
-    );
+    expect(database.runMigrations()).toBe(applicationMigrations.length);
+    database.createSession({
+      id: "session-1",
+      title: "Session 1",
+      createdAt: "2026-07-14T00:00:00.000Z",
+      updatedAt: "2026-07-14T00:00:00.000Z",
+      status: "active"
+    });
 
     expect(database.queryTableNames()).toEqual(
       expect.arrayContaining([
-        "app_settings",
-        "audit_events",
-        "feature_flags",
-        "installed_plugins",
-        "plugin_permissions",
+        "application_metadata",
+        "engineering_sessions",
         "schema_migrations"
       ])
     );
+    expect(database.listSessions()).toHaveLength(1);
+    expect(database.getHealth()).toMatchObject({
+      ok: true,
+      migrationVersion: 2
+    });
   });
 });

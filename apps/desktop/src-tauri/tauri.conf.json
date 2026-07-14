@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "ai.trae.engineeringos",
   "build": {
-    "beforeDevCommand": "pnpm dev:web",
-    "beforeBuildCommand": "pnpm build",
+    "beforeDevCommand": "pnpm --dir ../.. dev:desktop-env",
+    "beforeBuildCommand": "pnpm --dir ../.. build:desktop-runtime",
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420"
   },
@@ -26,6 +26,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": ["binaries/engineering-os-node"],
+    "resources": {
+      "../../desktop-backend/dist/": "desktop-backend/"
+    },
     "icon": []
   }
 }

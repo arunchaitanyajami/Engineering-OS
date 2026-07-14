@@ -6,3 +6,5 @@ coverage
 .env
 .env.local
 apps/desktop/src-tauri/target
+apps/desktop/src-tauri/binaries
+apps/desktop-backend/.engineering-os-dev

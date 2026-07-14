@@ -1,83 +1,102 @@
-import Database from "better-sqlite3";
+import { createRequire } from "node:module";
+import type * as SqliteModule from "node:sqlite";
 
 import type { Logger } from "@engineering-os/logger";
-import type { AuditEvent } from "@engineering-os/security";
+import type { EngineeringSession } from "@engineering-os/platform";
+
+const require = createRequire(import.meta.url);
+const { DatabaseSync } = require("node:sqlite") as typeof SqliteModule;
+type DatabaseConnection = InstanceType<typeof DatabaseSync>;
 
 export interface SqlMigration {
-  readonly id: string;
-  readonly description: string;
+  readonly version: number;
+  readonly name: string;
   readonly sql: string;
 }
 
-export const foundationMigrations: readonly SqlMigration[] = [
-  {
-    id: "0001_foundation_schema",
-    description: "Create the Milestone 0 foundation tables.",
-    sql: `
-      CREATE TABLE IF NOT EXISTS schema_migrations (
-        id TEXT PRIMARY KEY,
-        description TEXT NOT NULL,
-        applied_at TEXT NOT NULL
-      );
+export interface ApplicationDatabaseHealth {
+  readonly ok: boolean;
+  readonly migrationVersion: number;
+  readonly databasePath: string;
+}
 
-      CREATE TABLE IF NOT EXISTS app_settings (
+export const applicationMigrations: readonly SqlMigration[] = [
+  {
+    version: 1,
+    name: "application_metadata",
+    sql: `
+      CREATE TABLE IF NOT EXISTS application_metadata (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
-
-      CREATE TABLE IF NOT EXISTS feature_flags (
-        key TEXT PRIMARY KEY,
-        enabled INTEGER NOT NULL DEFAULT 0,
-        updated_at TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS installed_plugins (
-        plugin_id TEXT PRIMARY KEY,
-        version TEXT NOT NULL,
-        enabled INTEGER NOT NULL DEFAULT 1,
-        installed_at TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS plugin_permissions (
-        plugin_id TEXT NOT NULL,
-        permission TEXT NOT NULL,
-        granted INTEGER NOT NULL DEFAULT 0,
-        granted_at TEXT,
-        PRIMARY KEY (plugin_id, permission)
-      );
-
-      CREATE TABLE IF NOT EXISTS audit_events (
+    `
+  },
+  {
+    version: 2,
+    name: "engineering_sessions",
+    sql: `
+      CREATE TABLE IF NOT EXISTS engineering_sessions (
         id TEXT PRIMARY KEY,
-        timestamp TEXT NOT NULL,
-        actor_type TEXT NOT NULL,
-        actor_id TEXT,
-        action TEXT NOT NULL,
-        resource_type TEXT,
-        resource_id TEXT,
-        outcome TEXT NOT NULL,
-        correlation_id TEXT NOT NULL,
-        metadata_json TEXT
+        title TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        status TEXT NOT NULL
       );
+
+      CREATE INDEX IF NOT EXISTS idx_engineering_sessions_updated_at
+        ON engineering_sessions(updated_at DESC);
     `
   }
 ];
 
-export interface DatabaseHealth {
-  readonly ok: boolean;
-  readonly userVersion: number;
-}
+const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
 
-export class SqliteDatabase {
-  private readonly connection: Database.Database;
+const createSchemaMigrationsTableSql = `
+  CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    applied_at TEXT NOT NULL
+  );
+`;
+
+const readRequiredString = (value: unknown, fieldName: string): string => {
+  if (typeof value !== "string") {
+    throw new Error(`Expected '${fieldName}' to be a string.`);
+  }
+
+  return value;
+};
+
+const beginTransaction = (database: DatabaseConnection) => {
+  database.exec("BEGIN IMMEDIATE");
+};
+
+const commitTransaction = (database: DatabaseConnection) => {
+  database.exec("COMMIT");
+};
+
+const rollbackTransaction = (database: DatabaseConnection) => {
+  if (database.isTransaction) {
+    database.exec("ROLLBACK");
+  }
+};
+
+export class ApplicationDatabase {
+  private readonly connection: DatabaseConnection;
 
   constructor(
-    filePath: string,
+    private readonly filePath: string,
     private readonly logger?: Logger
   ) {
-    this.connection = new Database(filePath);
-    this.connection.pragma("journal_mode = WAL");
-    this.connection.pragma("foreign_keys = ON");
+    this.connection = new DatabaseSync(filePath);
+    this.connection.exec(
+      [
+        "PRAGMA journal_mode = WAL",
+        "PRAGMA foreign_keys = ON",
+        `PRAGMA busy_timeout = ${DEFAULT_BUSY_TIMEOUT_MS}`
+      ].join(";")
+    );
   }
 
   close(): void {
@@ -85,94 +104,104 @@ export class SqliteDatabase {
   }
 
   runMigrations(
-    migrations: readonly SqlMigration[] = foundationMigrations
-  ): void {
-    const hasMigrationStatement = this.connection.prepare(
-      "SELECT COUNT(*) as count FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
-    );
-    const migrationTableExists =
-      (hasMigrationStatement.get() as { count: number }).count > 0;
+    migrations: readonly SqlMigration[] = applicationMigrations
+  ): number {
+    this.connection.exec(createSchemaMigrationsTableSql);
 
-    if (!migrationTableExists) {
-      this.connection.exec(`
-        CREATE TABLE IF NOT EXISTS schema_migrations (
-          id TEXT PRIMARY KEY,
-          description TEXT NOT NULL,
-          applied_at TEXT NOT NULL
-        );
-      `);
-    }
-
-    const getAppliedMigration = this.connection.prepare(
-      "SELECT id FROM schema_migrations WHERE id = ?"
+    const findAppliedMigration = this.connection.prepare(
+      "SELECT version FROM schema_migrations WHERE version = ?"
     );
     const insertMigration = this.connection.prepare(
-      "INSERT INTO schema_migrations (id, description, applied_at) VALUES (?, ?, ?)"
+      "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)"
     );
 
-    const applyMigration = this.connection.transaction(
-      (migration: SqlMigration) => {
+    for (const migration of migrations) {
+      const existingMigration = findAppliedMigration.get(migration.version) as
+        { version: number } | undefined;
+
+      if (existingMigration) {
+        continue;
+      }
+
+      beginTransaction(this.connection);
+
+      try {
         this.connection.exec(migration.sql);
         insertMigration.run(
-          migration.id,
-          migration.description,
+          migration.version,
+          migration.name,
           new Date().toISOString()
         );
+        commitTransaction(this.connection);
         this.logger?.info("Applied SQLite migration.", {
-          migrationId: migration.id
+          migrationVersion: migration.version,
+          migrationName: migration.name
         });
+      } catch (error) {
+        rollbackTransaction(this.connection);
+        throw error;
       }
-    );
+    }
 
-    migrations.forEach((migration) => {
-      const existingMigration = getAppliedMigration.get(migration.id) as
-        { id: string } | undefined;
-
-      if (!existingMigration) {
-        applyMigration(migration);
-      }
-    });
+    return this.getMigrationVersion();
   }
 
-  healthCheck(): DatabaseHealth {
-    const row = this.connection.prepare("PRAGMA user_version").get() as {
-      user_version: number;
-    };
-
+  getHealth(): ApplicationDatabaseHealth {
     return {
       ok: true,
-      userVersion: row.user_version
+      migrationVersion: this.getMigrationVersion(),
+      databasePath: this.filePath
     };
   }
 
-  recordAuditEvent(event: AuditEvent): void {
+  setMetadata(key: string, value: string): void {
     const statement = this.connection.prepare(`
-      INSERT INTO audit_events (
-        id,
-        timestamp,
-        actor_type,
-        actor_id,
-        action,
-        resource_type,
-        resource_id,
-        outcome,
-        correlation_id,
-        metadata_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO application_metadata (key, value, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET
+        value = excluded.value,
+        updated_at = excluded.updated_at
+    `);
+
+    statement.run(key, value);
+  }
+
+  listSessions(): readonly EngineeringSession[] {
+    const statement = this.connection.prepare(`
+      SELECT id, title, created_at, updated_at, status
+      FROM engineering_sessions
+      ORDER BY updated_at DESC
+    `);
+
+    const rows = statement.all() as Array<Record<string, unknown>>;
+
+    return rows.map((row) => ({
+      id: readRequiredString(row.id, "id"),
+      title: readRequiredString(row.title, "title"),
+      createdAt: readRequiredString(row.created_at, "created_at"),
+      updatedAt: readRequiredString(row.updated_at, "updated_at"),
+      status: readRequiredString(
+        row.status,
+        "status"
+      ) as EngineeringSession["status"]
+    }));
+  }
+
+  createSession(session: EngineeringSession): EngineeringSession {
+    const statement = this.connection.prepare(`
+      INSERT INTO engineering_sessions (id, title, created_at, updated_at, status)
+      VALUES (?, ?, ?, ?, ?)
     `);
 
     statement.run(
-      event.id,
-      event.timestamp,
-      event.actorType,
-      event.actorId ?? null,
-      event.action,
-      event.resourceType ?? null,
-      event.resourceId ?? null,
-      event.outcome,
-      event.correlationId,
-      event.metadata ? JSON.stringify(event.metadata) : null
+      session.id,
+      session.title,
+      session.createdAt,
+      session.updatedAt,
+      session.status
     );
+
+    return session;
   }
 
   queryTableNames(): readonly string[] {
@@ -180,8 +209,24 @@ export class SqliteDatabase {
       .prepare(
         "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
       )
-      .all() as Array<{ name: string }>;
+      .all() as Array<Record<string, unknown>>;
 
-    return rows.map((row) => row.name);
+    return rows.map((row) => readRequiredString(row.name, "name"));
+  }
+
+  private getMigrationVersion(): number {
+    const row = this.connection
+      .prepare(
+        "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations"
+      )
+      .get() as Record<string, unknown>;
+
+    const version = row.version;
+
+    if (typeof version !== "number") {
+      throw new Error("Failed to read the current schema migration version.");
+    }
+
+    return version;
   }
 }

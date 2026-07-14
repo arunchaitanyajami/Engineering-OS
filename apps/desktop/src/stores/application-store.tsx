@@ -17,6 +17,7 @@ import {
 } from "@engineering-os/config";
 import { createLogger, type Logger } from "@engineering-os/logger";
 import type {
+  DatabaseStatus,
   DesktopPlatform,
   EngineeringSession,
   LocalServicesStatus,
@@ -105,53 +106,109 @@ const applyTheme = (theme: "light" | "dark") => {
   document.documentElement.dataset.theme = theme;
 };
 
+const subscribeToSystemThemeChanges = (
+  onChange: (prefersDark: boolean) => void
+): (() => void) => {
+  if (
+    typeof window === "undefined" ||
+    typeof window.matchMedia !== "function"
+  ) {
+    return () => undefined;
+  }
+
+  const mediaQuery = window.matchMedia(SYSTEM_THEME_QUERY);
+  const handleChange = (event: MediaQueryListEvent | MediaQueryList) => {
+    onChange(event.matches);
+  };
+
+  if ("addEventListener" in mediaQuery) {
+    mediaQuery.addEventListener("change", handleChange);
+    return () => mediaQuery.removeEventListener("change", handleChange);
+  }
+
+  const legacyMediaQuery = mediaQuery as MediaQueryList & {
+    addListener(listener: (event: MediaQueryListEvent) => void): void;
+    removeListener(listener: (event: MediaQueryListEvent) => void): void;
+  };
+
+  legacyMediaQuery.addListener(handleChange);
+  return () => legacyMediaQuery.removeListener(handleChange);
+};
+
+const getDatabaseSummary = (
+  databaseStatus: DatabaseStatus | undefined
+): Pick<StatusEntry, "value" | "tone"> => {
+  if (!databaseStatus) {
+    return {
+      value: "Bootstrap pending",
+      tone: "warning"
+    };
+  }
+
+  if (databaseStatus.status === "ready") {
+    return {
+      value: `Ready (v${databaseStatus.migrationVersion})`,
+      tone: "success"
+    };
+  }
+
+  return {
+    value: "Unavailable outside Tauri",
+    tone: "warning"
+  };
+};
+
 export const buildStatusEntries = (
   state: Pick<
     ApplicationStoreState,
     "appVersion" | "platformInfo" | "localServicesStatus"
   >
-): readonly StatusEntry[] => [
-  {
-    id: "version",
-    label: "Version",
-    value: state.appVersion,
-    tone: "neutral"
-  },
-  {
-    id: "mode",
-    label: "Mode",
-    value: "Local-first",
-    tone: "success"
-  },
-  {
-    id: "database",
-    label: "Database",
-    value: state.localServicesStatus?.database.ok
-      ? `Ready (v${state.localServicesStatus.database.migrationVersion})`
-      : "Bootstrap pending",
-    tone: state.localServicesStatus?.database.ok ? "success" : "warning"
-  },
-  {
-    id: "mcp",
-    label: "MCP",
-    value: "Future milestone",
-    tone: "neutral"
-  },
-  {
-    id: "provider",
-    label: "AI",
-    value: "Not configured",
-    tone: "neutral"
-  },
-  {
-    id: "platform",
-    label: "Platform",
-    value: state.platformInfo
-      ? `${state.platformInfo.operatingSystem}/${state.platformInfo.arch}`
-      : "Loading",
-    tone: state.platformInfo ? "success" : "warning"
-  }
-];
+): readonly StatusEntry[] => {
+  const databaseSummary = getDatabaseSummary(
+    state.localServicesStatus?.database
+  );
+
+  return [
+    {
+      id: "version",
+      label: "Version",
+      value: state.appVersion,
+      tone: "neutral"
+    },
+    {
+      id: "mode",
+      label: "Mode",
+      value: "Local-first",
+      tone: "success"
+    },
+    {
+      id: "database",
+      label: "Database",
+      value: databaseSummary.value,
+      tone: databaseSummary.tone
+    },
+    {
+      id: "mcp",
+      label: "MCP",
+      value: "Future milestone",
+      tone: "neutral"
+    },
+    {
+      id: "provider",
+      label: "AI",
+      value: "Not configured",
+      tone: "neutral"
+    },
+    {
+      id: "platform",
+      label: "Platform",
+      value: state.platformInfo
+        ? `${state.platformInfo.operatingSystem}/${state.platformInfo.arch}`
+        : "Loading",
+      tone: state.platformInfo ? "success" : "warning"
+    }
+  ];
+};
 
 export function ApplicationStoreProvider({
   configStore,
@@ -177,6 +234,8 @@ export function ApplicationStoreProvider({
   const [sessions, setSessions] = useState<readonly EngineeringSession[]>([]);
   const [isCommandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [bootstrapCounter, setBootstrapCounter] = useState(0);
+  const [systemPrefersDark, setSystemPrefersDark] =
+    useState(getSystemPrefersDark);
 
   useEffect(() => {
     let cancelled = false;
@@ -209,10 +268,13 @@ export function ApplicationStoreProvider({
 
         setInitializationState({ status: "checking-local-services" });
         logger.info("Checking local services.");
-        const [resolvedLocalServices, storedSessions] = await Promise.all([
-          platform.initializeLocalServices(),
-          platform.listSessions()
-        ]);
+        const resolvedLocalServices = await platform.initializeLocalServices();
+
+        if (cancelled) {
+          return;
+        }
+
+        const storedSessions = await platform.listSessions();
 
         if (cancelled) {
           return;
@@ -248,8 +310,16 @@ export function ApplicationStoreProvider({
   }, [bootstrapCounter, configStore, logger, platform]);
 
   useEffect(() => {
-    applyTheme(resolveThemeMode(config.settings.theme, getSystemPrefersDark()));
+    if (config.settings.theme !== "system") {
+      return undefined;
+    }
+
+    return subscribeToSystemThemeChanges(setSystemPrefersDark);
   }, [config.settings.theme]);
+
+  useEffect(() => {
+    applyTheme(resolveThemeMode(config.settings.theme, systemPrefersDark));
+  }, [config.settings.theme, systemPrefersDark]);
 
   const retryInitialization = useCallback(() => {
     setBootstrapCounter((value) => value + 1);
@@ -288,8 +358,8 @@ export function ApplicationStoreProvider({
   );
 
   const resolvedTheme = useMemo(
-    () => resolveThemeMode(config.settings.theme, getSystemPrefersDark()),
-    [config.settings.theme]
+    () => resolveThemeMode(config.settings.theme, systemPrefersDark),
+    [config.settings.theme, systemPrefersDark]
   );
 
   const state = useMemo<ApplicationStoreState>(

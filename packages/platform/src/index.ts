@@ -10,11 +10,22 @@ export interface PlatformInfo {
   readonly isTauri: boolean;
 }
 
-export interface DatabaseStatus {
-  readonly ok: boolean;
+export interface ReadyDatabaseStatus {
+  readonly ok: true;
+  readonly status: "ready";
   readonly migrationVersion: number;
   readonly databasePath: string;
 }
+
+export interface UnavailableDatabaseStatus {
+  readonly ok: false;
+  readonly status: "unavailable";
+  readonly reason: string;
+  readonly migrationVersion: null;
+  readonly databasePath: string;
+}
+
+export type DatabaseStatus = ReadyDatabaseStatus | UnavailableDatabaseStatus;
 
 export interface LocalServicesStatus {
   readonly database: DatabaseStatus;
@@ -81,6 +92,7 @@ export class MockDesktopPlatform implements DesktopPlatform {
     return {
       database: {
         ok: true,
+        status: "ready",
         migrationVersion: 2,
         databasePath: "/mock/engineering-os/app.sqlite"
       },

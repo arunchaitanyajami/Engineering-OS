@@ -35,7 +35,10 @@ export default defineConfig({
     }
   },
   test: {
-    include: ["packages/*/tests/**/*.integration.test.ts"],
+    include: [
+      "packages/*/tests/**/*.integration.test.ts",
+      "apps/desktop-backend/tests/**/*.integration.test.ts"
+    ],
     environment: "node"
   }
 });

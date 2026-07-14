@@ -18,6 +18,12 @@ export function SettingsScreen() {
   const { updateSettings } = useApplicationActions();
   const { appVersion, config, localServicesStatus, platformInfo } =
     useApplicationState();
+  const databaseLocation =
+    localServicesStatus?.database.status === "ready"
+      ? localServicesStatus.database.databasePath
+      : localServicesStatus?.database.status === "unavailable"
+        ? "Unavailable outside Tauri"
+        : "Loading";
 
   const handleThemeChange = (event: ChangeEvent<HTMLSelectElement>) => {
     void updateSettings({
@@ -128,9 +134,7 @@ export function SettingsScreen() {
             </div>
             <div className="summary-list__row">
               <span>Database path</span>
-              <span>
-                {localServicesStatus?.database.databasePath ?? "Loading"}
-              </span>
+              <span>{databaseLocation}</span>
             </div>
           </div>
         </PanelCard>

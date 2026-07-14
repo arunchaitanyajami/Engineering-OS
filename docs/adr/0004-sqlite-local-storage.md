@@ -27,13 +27,16 @@ Use SQLite as the local relational database and hide access behind repositories 
 - Schema creation and migration execution live behind a dedicated database
   package instead of React components.
 - Milestone 1 keeps the initial schema intentionally small:
-  `application_metadata` and `schema_migrations`.
+  `application_metadata`, `schema_migrations`, and `engineering_sessions` for
+  the desktop session shell required by the milestone acceptance criteria.
 
 ## Operational Notes
 
 - Database files live in the application data directory resolved by the desktop
   runtime.
 - Migrations are versioned and must be idempotent.
+- Session persistence in Milestone 1 is limited to local workspace-shell
+  records; plugin, agent, workflow, and connector schemas remain out of scope.
 - Backup, corruption recovery, and WAL-mode tuning remain explicit follow-up
   concerns as the schema grows.
 - The project assumes a single-user local desktop process as the primary

@@ -19,6 +19,9 @@ interface TauriPlatformInfoResponse {
 
 const BROWSER_CONFIG_KEY = "engineering-os.application-config";
 const BROWSER_SESSION_KEY = "engineering-os.sessions";
+const BACKEND_RETRY_ATTEMPTS = 10;
+const BACKEND_RETRY_DELAY_MS = 150;
+let cachedBackendBaseUrl: string | null = null;
 
 const isTauriEnvironment = (): boolean =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -54,6 +57,80 @@ const createBrowserFallbackInfo = (): PlatformInfo => ({
   isTauri: false
 });
 
+const resolveBackendBaseUrl = async (): Promise<string> => {
+  if (cachedBackendBaseUrl) {
+    return cachedBackendBaseUrl;
+  }
+
+  cachedBackendBaseUrl = await invoke<string>("get_backend_base_url");
+  return cachedBackendBaseUrl;
+};
+
+const parseBackendError = async (response: Response): Promise<Error> => {
+  try {
+    const payload = (await response.json()) as {
+      readonly code?: string;
+      readonly message?: string;
+    };
+
+    return new Error(
+      payload.message ??
+        `Desktop backend request failed with status ${response.status}.`
+    );
+  } catch {
+    return new Error(
+      `Desktop backend request failed with status ${response.status}.`
+    );
+  }
+};
+
+const wait = async (milliseconds: number): Promise<void> =>
+  new Promise((resolve) => {
+    window.setTimeout(resolve, milliseconds);
+  });
+
+const isRetryableBackendError = (error: unknown): boolean =>
+  error instanceof TypeError ||
+  (error instanceof Error &&
+    /fetch|network|load failed|failed to fetch/i.test(error.message));
+
+const requestDesktopBackend = async <T>(
+  path: string,
+  init?: RequestInit
+): Promise<T> => {
+  const baseUrl = await resolveBackendBaseUrl();
+
+  for (let attempt = 1; attempt <= BACKEND_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch(`${baseUrl}${path}`, {
+        ...init,
+        headers: {
+          "content-type": "application/json",
+          ...(init?.headers ?? {})
+        }
+      });
+
+      if (!response.ok) {
+        throw await parseBackendError(response);
+      }
+
+      return (await response.json()) as T;
+    } catch (error) {
+      const canRetry =
+        attempt < BACKEND_RETRY_ATTEMPTS && isRetryableBackendError(error);
+
+      if (!canRetry) {
+        throw error;
+      }
+
+      // Dev startup can race the local backend by a few hundred milliseconds.
+      await wait(BACKEND_RETRY_DELAY_MS * attempt);
+    }
+  }
+
+  throw new Error("Desktop backend request retry budget was exhausted.");
+};
+
 export class TauriDesktopPlatform implements DesktopPlatform {
   async getAppVersion(): Promise<string> {
     if (!isTauriEnvironment()) {
@@ -81,16 +158,18 @@ export class TauriDesktopPlatform implements DesktopPlatform {
     if (!isTauriEnvironment()) {
       return {
         database: {
-          ok: true,
-          migrationVersion: 0,
+          ok: false,
+          status: "unavailable",
+          reason: "non-tauri-environment",
+          migrationVersion: null,
           databasePath: "browser-memory"
         },
-        logFilePath: "console-only",
+        logFilePath: "unavailable-outside-tauri",
         configFilePath: "browser-local-storage"
       };
     }
 
-    return invoke<LocalServicesStatus>("initialize_local_services");
+    return requestDesktopBackend<LocalServicesStatus>("/health");
   }
 
   async loadPersistedConfig(): Promise<string | null> {
@@ -98,7 +177,11 @@ export class TauriDesktopPlatform implements DesktopPlatform {
       return window.localStorage.getItem(BROWSER_CONFIG_KEY);
     }
 
-    return invoke<string | null>("load_persisted_config");
+    const response = await requestDesktopBackend<{
+      readonly serializedConfig: string | null;
+    }>("/config");
+
+    return response.serializedConfig;
   }
 
   async savePersistedConfig(serializedConfig: string): Promise<void> {
@@ -107,7 +190,10 @@ export class TauriDesktopPlatform implements DesktopPlatform {
       return;
     }
 
-    await invoke("save_persisted_config", { serializedConfig });
+    await requestDesktopBackend<{ readonly ok: boolean }>("/config", {
+      method: "PUT",
+      body: JSON.stringify({ serializedConfig })
+    });
   }
 
   async listSessions(): Promise<readonly EngineeringSession[]> {
@@ -119,7 +205,11 @@ export class TauriDesktopPlatform implements DesktopPlatform {
         : [];
     }
 
-    return invoke<readonly EngineeringSession[]>("list_sessions");
+    const response = await requestDesktopBackend<{
+      readonly sessions: readonly EngineeringSession[];
+    }>("/sessions");
+
+    return response.sessions;
   }
 
   async createSession(
@@ -134,7 +224,14 @@ export class TauriDesktopPlatform implements DesktopPlatform {
       return session;
     }
 
-    return invoke<EngineeringSession>("create_session", { session });
+    const response = await requestDesktopBackend<{
+      readonly session: EngineeringSession;
+    }>("/sessions", {
+      method: "POST",
+      body: JSON.stringify({ session })
+    });
+
+    return response.session;
   }
 
   async writeLogEntry(entry: PersistedLogEntry): Promise<void> {
@@ -142,7 +239,10 @@ export class TauriDesktopPlatform implements DesktopPlatform {
       return;
     }
 
-    await invoke("write_log_entry", { entry });
+    await requestDesktopBackend<{ readonly ok: boolean }>("/logs", {
+      method: "POST",
+      body: JSON.stringify({ entry })
+    });
   }
 
   async openExternalUrl(url: string): Promise<void> {

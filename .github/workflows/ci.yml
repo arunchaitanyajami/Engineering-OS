@@ -18,16 +18,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Install better-sqlite3 native binding
-        run: |
-          pkg_dir=$(find node_modules/.pnpm -maxdepth 1 -type d -name 'better-sqlite3@*' | head -n 1)
-          pnpm --dir "$pkg_dir/node_modules/better-sqlite3" run install
 
       - name: Install Playwright browser
         run: pnpm exec playwright install --with-deps chromium
@@ -81,7 +76,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       - name: Install Linux desktop dependencies

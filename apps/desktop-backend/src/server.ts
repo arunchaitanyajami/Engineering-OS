@@ -21,10 +21,21 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { semanticVersionSchema } from "@engineering-os/contracts";
 import {
+  mcpToolExecutionControlRequestSchema,
+  mcpServerRegistrationSchema,
+  toolExecutionRequestSchema
+} from "@engineering-os/contracts/unstable-runtime";
+import {
   createLogger,
   type LogEntry,
   type LogTransport
 } from "@engineering-os/logger";
+import {
+  FileMcpUserRegistrationStore,
+  type McpUserRegistrationStore,
+  McpGatewayError,
+  McpGatewayService
+} from "@engineering-os/mcp-gateway";
 import {
   PluginRuntimeError,
   PluginRuntimeService,
@@ -57,6 +68,7 @@ const CONFIG_FILE_NAME = "application-config.json";
 const DATABASE_FILE_NAME = "engineering-os.sqlite";
 const LOG_DIRECTORY_NAME = "logs";
 const LOG_FILE_NAME = "application.log";
+const MCP_USER_REGISTRATIONS_FILE_NAME = "mcp-user-registrations.json";
 const DEFAULT_HOST = "127.0.0.1";
 const MAX_CONFIG_BYTES = 128 * 1024;
 const MAX_SESSION_BYTES = 16 * 1024;
@@ -88,14 +100,29 @@ const pluginRuntimeControlRequestSchema = z
   })
   .strict();
 
+const mcpServerControlRequestSchema = z
+  .object({
+    registrationId: z.string().trim().min(1).max(512)
+  })
+  .strict();
+
+const mcpServerRegistrationRequestSchema = z
+  .object({
+    registration: mcpServerRegistrationSchema
+  })
+  .strict();
+
 export interface BackendContext {
   readonly appDataDirectory: string;
   readonly configFilePath: string;
   readonly databaseFilePath: string;
   readonly logFilePath: string;
+  readonly mcpUserRegistrationsFilePath: string;
+  readonly mcpUserRegistrationStore: McpUserRegistrationStore;
   readonly authToken: string;
   readonly allowedOrigin: string | null;
   readonly database: ApplicationDatabase;
+  readonly mcpGateway: McpGatewayService;
   readonly pluginRegistry: PluginRegistryService;
   readonly pluginRuntime: PluginRuntimeService;
   readonly pluginLifecycle: PluginLifecycleService;
@@ -237,6 +264,27 @@ const readOptionalFile = async (path: string): Promise<string | null> => {
   }
 };
 
+const createRequestAbortSignal = (
+  request: IncomingMessage,
+  response: ServerResponse
+): AbortSignal => {
+  const controller = new AbortController();
+  const abort = () => {
+    if (!controller.signal.aborted) {
+      controller.abort();
+    }
+  };
+
+  request.once("aborted", abort);
+  response.once("close", () => {
+    if (!response.writableEnded) {
+      abort();
+    }
+  });
+
+  return controller.signal;
+};
+
 const isMissingFileError = (error: unknown): boolean =>
   typeof error === "object" &&
   error !== null &&
@@ -253,20 +301,24 @@ const asPublicError = (
     ? new BackendPublicError(error.code, error.message, error.statusCode, {
         cause: error.cause ?? error
       })
-    : error instanceof PluginRuntimeError
+    : error instanceof McpGatewayError
       ? new BackendPublicError(error.code, error.message, error.statusCode, {
           cause: error.cause ?? error
         })
-      : error instanceof BackendPublicError
-        ? error
-        : new BackendPublicError(
-            fallbackCode,
-            fallbackMessage,
-            fallbackStatusCode,
-            {
-              cause: error
-            }
-          );
+      : error instanceof PluginRuntimeError
+        ? new BackendPublicError(error.code, error.message, error.statusCode, {
+            cause: error.cause ?? error
+          })
+        : error instanceof BackendPublicError
+          ? error
+          : new BackendPublicError(
+              fallbackCode,
+              fallbackMessage,
+              fallbackStatusCode,
+              {
+                cause: error
+              }
+            );
 
 const atomicWriteFile = async (
   path: string,
@@ -716,6 +768,10 @@ export const createBackendContext = async (
   const configFilePath = join(appDataDirectory, CONFIG_FILE_NAME);
   const databaseFilePath = join(appDataDirectory, DATABASE_FILE_NAME);
   const logFilePath = join(appDataDirectory, LOG_DIRECTORY_NAME, LOG_FILE_NAME);
+  const mcpUserRegistrationsFilePath = join(
+    appDataDirectory,
+    MCP_USER_REGISTRATIONS_FILE_NAME
+  );
   const pluginsDirectoryPath = join(appDataDirectory, PLUGINS_DIRECTORY_NAME);
   const fileLogTransport = new FileLogTransport(logFilePath);
 
@@ -735,6 +791,14 @@ export const createBackendContext = async (
     engineeringOsVersion: getEngineeringOsVersion(),
     installationsRootPath: pluginsDirectoryPath
   });
+  const mcpUserRegistrationStore = new FileMcpUserRegistrationStore(
+    mcpUserRegistrationsFilePath
+  );
+  const mcpGateway = new McpGatewayService({
+    installedPlugins: pluginRegistry,
+    logger,
+    userRegistrations: await mcpUserRegistrationStore.load()
+  });
   const pluginRuntime = new PluginRuntimeService({
     pluginResolver: pluginRegistry,
     logger,
@@ -752,9 +816,12 @@ export const createBackendContext = async (
     configFilePath,
     databaseFilePath,
     logFilePath,
+    mcpUserRegistrationsFilePath,
+    mcpUserRegistrationStore,
     authToken,
     allowedOrigin,
     database,
+    mcpGateway,
     pluginRegistry,
     pluginRuntime,
     pluginLifecycle,
@@ -837,6 +904,173 @@ export const createDesktopBackendHandler =
         return;
       }
 
+      if (request.method === "GET" && requestUrl.pathname === "/mcp/servers") {
+        const pluginId = requestUrl.searchParams.get("pluginId")?.trim();
+
+        writeJson(response, {
+          servers: context.mcpGateway.listRegisteredServers(
+            pluginId ? { pluginId } : {}
+          )
+        });
+        return;
+      }
+
+      if (request.method === "GET" && requestUrl.pathname === "/mcp/health") {
+        const pluginId = requestUrl.searchParams.get("pluginId")?.trim();
+
+        writeJson(response, {
+          servers: context.mcpGateway.listServerHealth(
+            pluginId ? { pluginId } : {}
+          )
+        });
+        return;
+      }
+
+      if (request.method === "GET" && requestUrl.pathname === "/mcp/catalog") {
+        const pluginId = requestUrl.searchParams.get("pluginId")?.trim();
+        const serverId = requestUrl.searchParams.get("serverId")?.trim();
+
+        writeJson(response, {
+          catalog: context.mcpGateway.getCatalog({
+            ...(pluginId ? { pluginId } : {}),
+            ...(serverId ? { serverId } : {})
+          })
+        });
+        return;
+      }
+
+      if (request.method === "GET" && requestUrl.pathname === "/mcp/tools") {
+        const pluginId = requestUrl.searchParams.get("pluginId")?.trim();
+        const serverId = requestUrl.searchParams.get("serverId")?.trim();
+
+        writeJson(response, {
+          tools: context.mcpGateway.listTools({
+            ...(pluginId ? { pluginId } : {}),
+            ...(serverId ? { serverId } : {})
+          })
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/mcp/tools/execute"
+      ) {
+        const toolExecutionRequest = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          toolExecutionRequestSchema,
+          "MCP_GATEWAY_REQUEST_INVALID",
+          "MCP gateway request is invalid."
+        );
+
+        const requestAbortSignal = createRequestAbortSignal(request, response);
+        const result = await context.mcpGateway.executeTool(
+          toolExecutionRequestSchema.parse(toolExecutionRequest),
+          {
+            signal: requestAbortSignal
+          }
+        );
+
+        if (requestAbortSignal.aborted || response.destroyed) {
+          return;
+        }
+
+        writeJson(response, {
+          result
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/mcp/tool-executions/start"
+      ) {
+        const toolExecutionRequest = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          toolExecutionRequestSchema,
+          "MCP_GATEWAY_REQUEST_INVALID",
+          "MCP gateway request is invalid."
+        );
+
+        writeJson(response, {
+          execution: context.mcpGateway.startToolExecution(
+            toolExecutionRequestSchema.parse(toolExecutionRequest)
+          )
+        });
+        return;
+      }
+
+      if (
+        request.method === "GET" &&
+        requestUrl.pathname === "/mcp/tool-executions"
+      ) {
+        const executionId = requestUrl.searchParams.get("executionId")?.trim();
+
+        if (!executionId) {
+          throw new BackendPublicError(
+            "MCP_GATEWAY_REQUEST_INVALID",
+            "MCP gateway request is invalid.",
+            400
+          );
+        }
+
+        writeJson(response, {
+          execution: context.mcpGateway.getToolExecution(executionId)
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/mcp/tool-executions/cancel"
+      ) {
+        const controlRequest = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          mcpToolExecutionControlRequestSchema,
+          "MCP_GATEWAY_REQUEST_INVALID",
+          "MCP gateway request is invalid."
+        );
+
+        writeJson(response, {
+          execution: await context.mcpGateway.cancelToolExecution(
+            controlRequest.executionId
+          )
+        });
+        return;
+      }
+
+      if (
+        request.method === "GET" &&
+        requestUrl.pathname === "/mcp/resources"
+      ) {
+        const pluginId = requestUrl.searchParams.get("pluginId")?.trim();
+        const serverId = requestUrl.searchParams.get("serverId")?.trim();
+
+        writeJson(response, {
+          resources: context.mcpGateway.listResources({
+            ...(pluginId ? { pluginId } : {}),
+            ...(serverId ? { serverId } : {})
+          })
+        });
+        return;
+      }
+
+      if (request.method === "GET" && requestUrl.pathname === "/mcp/prompts") {
+        const pluginId = requestUrl.searchParams.get("pluginId")?.trim();
+        const serverId = requestUrl.searchParams.get("serverId")?.trim();
+
+        writeJson(response, {
+          prompts: context.mcpGateway.listPrompts({
+            ...(pluginId ? { pluginId } : {}),
+            ...(serverId ? { serverId } : {})
+          })
+        });
+        return;
+      }
+
       if (request.method === "POST" && requestUrl.pathname === "/logs") {
         const { entry } = await readJsonBody<{
           readonly entry: PersistedLogEntry;
@@ -904,8 +1138,127 @@ export const createDesktopBackendHandler =
           "PLUGIN_DISABLE_REQUEST_INVALID",
           "Plugin disable request is invalid."
         );
+        await context.mcpGateway.stopServersForPlugin(pluginId);
         writeJson(response, {
           plugin: await context.pluginLifecycle.disablePlugin(pluginId)
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/mcp/servers/register"
+      ) {
+        const { registration } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          mcpServerRegistrationRequestSchema,
+          "MCP_GATEWAY_REQUEST_INVALID",
+          "MCP gateway request is invalid."
+        );
+
+        if (registration.source.type !== "user") {
+          throw new BackendPublicError(
+            "MCP_GATEWAY_USER_REGISTRATION_REQUIRED",
+            "User MCP registration requests must use the user source type.",
+            403
+          );
+        }
+
+        writeJson(response, {
+          server: await (async () => {
+            const registeredServer = context.mcpGateway.registerServer(
+              mcpServerRegistrationSchema.parse(registration)
+            );
+
+            try {
+              await context.mcpUserRegistrationStore.save(
+                context.mcpGateway.listUserRegistrations()
+              );
+            } catch (error) {
+              await context.mcpGateway
+                .unregisterServer(registeredServer.registrationId)
+                .catch(() => undefined);
+              throw error;
+            }
+
+            return registeredServer;
+          })()
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/mcp/servers/unregister"
+      ) {
+        const { registrationId } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          mcpServerControlRequestSchema,
+          "MCP_GATEWAY_REQUEST_INVALID",
+          "MCP gateway request is invalid."
+        );
+
+        const previousUserRegistrations =
+          context.mcpGateway.listUserRegistrations();
+        await context.mcpGateway.unregisterServer(registrationId);
+
+        try {
+          await context.mcpUserRegistrationStore.save(
+            context.mcpGateway.listUserRegistrations()
+          );
+        } catch (error) {
+          const removedRegistration = previousUserRegistrations.find(
+            (registration) => `user:${registration.id}` === registrationId
+          );
+
+          if (removedRegistration) {
+            try {
+              context.mcpGateway.registerServer(removedRegistration);
+            } catch {
+              // Preserve the original persistence error if rollback fails.
+            }
+          }
+
+          throw error;
+        }
+        writeJson(response, { ok: true });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/mcp/servers/start"
+      ) {
+        const { registrationId } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          mcpServerControlRequestSchema,
+          "MCP_GATEWAY_REQUEST_INVALID",
+          "MCP gateway request is invalid."
+        );
+
+        writeJson(response, {
+          server: await context.mcpGateway.startServer(registrationId)
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/mcp/servers/stop"
+      ) {
+        const { registrationId } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          mcpServerControlRequestSchema,
+          "MCP_GATEWAY_REQUEST_INVALID",
+          "MCP gateway request is invalid."
+        );
+
+        writeJson(response, {
+          server: await context.mcpGateway.stopServer(registrationId)
         });
         return;
       }
@@ -1056,6 +1409,7 @@ export const startDesktopBackendServer = async (
     authToken: context.authToken,
     async close() {
       await context.flushLogs();
+      await context.mcpGateway.dispose();
       await context.pluginRuntime.dispose();
       await closeServer(server, sockets);
       context.database.close();

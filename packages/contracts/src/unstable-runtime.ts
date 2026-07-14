@@ -11,7 +11,8 @@ import {
   keySchema,
   permissionScopeSchema,
   pluginIdSchema,
-  pluginManifestSchema
+  pluginManifestSchema,
+  pluginSecretReferenceSchema
 } from "./stable.js";
 import type { PermissionScope, PluginId, PluginManifest } from "./stable.js";
 
@@ -19,6 +20,8 @@ export type McpServerId = Brand<string, "McpServerId">;
 export type ToolId = Brand<string, "ToolId">;
 export type ExecutionId = Brand<string, "ExecutionId">;
 export type CorrelationId = Brand<string, "CorrelationId">;
+
+export const executionIdSchema = z.string().uuid();
 
 export const mcpServerId = (value: string): McpServerId => value as McpServerId;
 export const toolId = (value: string): ToolId => value as ToolId;
@@ -228,6 +231,39 @@ export const toolExecutionResultSchema = z
 
 export type ToolExecutionResult = z.infer<typeof toolExecutionResultSchema>;
 
+export const mcpToolExecutionStateSchema = z.enum(["running", "completed"]);
+
+export type McpToolExecutionState = z.infer<typeof mcpToolExecutionStateSchema>;
+
+export const mcpToolExecutionRecordSchema = z
+  .object({
+    executionId: executionIdSchema,
+    toolId: identifierSchema,
+    registrationId: z.string().trim().min(1).max(512),
+    serverId: identifierSchema,
+    pluginId: pluginIdSchema.optional(),
+    request: toolExecutionRequestSchema,
+    state: mcpToolExecutionStateSchema,
+    startedAt: isoTimestampSchema,
+    updatedAt: isoTimestampSchema,
+    result: toolExecutionResultSchema.optional()
+  })
+  .strict();
+
+export type McpToolExecutionRecord = z.infer<
+  typeof mcpToolExecutionRecordSchema
+>;
+
+export const mcpToolExecutionControlRequestSchema = z
+  .object({
+    executionId: executionIdSchema
+  })
+  .strict();
+
+export type McpToolExecutionControlRequest = z.infer<
+  typeof mcpToolExecutionControlRequestSchema
+>;
+
 export const systemSecretReferenceSchema = z
   .object({
     namespace: z.string().trim().min(1).max(256),
@@ -299,6 +335,129 @@ export const mcpServerRegistrationSchema = z
   .strict();
 
 export type McpServerRegistration = z.infer<typeof mcpServerRegistrationSchema>;
+
+export const registeredMcpServerStatusSchema = z.enum([
+  "registered",
+  "disabled"
+]);
+
+export type RegisteredMcpServerStatus = z.infer<
+  typeof registeredMcpServerStatusSchema
+>;
+
+export const registeredMcpServerSourceSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("plugin"),
+      pluginId: pluginIdSchema
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("user")
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("system")
+    })
+    .strict()
+]);
+
+export type RegisteredMcpServerSource = z.infer<
+  typeof registeredMcpServerSourceSchema
+>;
+
+export const gatewayEnvironmentValueSchema = z.union([
+  commandTextSchema,
+  pluginSecretReferenceSchema,
+  systemSecretReferenceSchema
+]);
+
+export type GatewayEnvironmentValue = z.infer<
+  typeof gatewayEnvironmentValueSchema
+>;
+
+export const registeredStdioMcpTransportSchema = z
+  .object({
+    type: z.literal("stdio"),
+    command: commandTextSchema,
+    args: z.array(commandTextSchema).default([]),
+    cwd: genericPathSchema.optional(),
+    env: z.record(z.string(), gatewayEnvironmentValueSchema).optional(),
+    timeoutMs: z.number().int().positive().max(300_000).optional()
+  })
+  .strict();
+
+export const registeredMcpTransportSchema = z.discriminatedUnion("type", [
+  registeredStdioMcpTransportSchema
+]);
+
+export type RegisteredMcpTransport = z.infer<
+  typeof registeredMcpTransportSchema
+>;
+
+export const registeredMcpServerSchema = z
+  .object({
+    registrationId: z.string().trim().min(1).max(256),
+    serverId: identifierSchema,
+    source: registeredMcpServerSourceSchema,
+    name: displayNameSchema,
+    transport: registeredMcpTransportSchema,
+    enabled: z.boolean(),
+    status: registeredMcpServerStatusSchema
+  })
+  .strict();
+
+export type RegisteredMcpServer = z.infer<typeof registeredMcpServerSchema>;
+
+export const mcpCatalogSnapshotSchema = z
+  .object({
+    tools: z.array(toolDescriptorSchema).default([]),
+    resources: z.array(resourceDescriptorSchema).default([]),
+    prompts: z.array(promptDescriptorSchema).default([])
+  })
+  .strict();
+
+export type McpCatalogSnapshot = z.infer<typeof mcpCatalogSnapshotSchema>;
+
+export const mcpCapabilityDiscoveryStatusSchema = z.enum([
+  "not-started",
+  "discovered",
+  "failed"
+]);
+
+export type McpCapabilityDiscoveryStatus = z.infer<
+  typeof mcpCapabilityDiscoveryStatusSchema
+>;
+
+export const mcpServerHealthStateSchema = z.enum([
+  "unknown",
+  "healthy",
+  "unhealthy"
+]);
+
+export type McpServerHealthState = z.infer<typeof mcpServerHealthStateSchema>;
+
+export const mcpServerHealthSnapshotSchema = z
+  .object({
+    registrationId: z.string().trim().min(1).max(256),
+    serverId: identifierSchema,
+    source: registeredMcpServerSourceSchema,
+    name: displayNameSchema,
+    transport: registeredMcpTransportSchema,
+    enabled: z.boolean(),
+    status: registeredMcpServerStatusSchema,
+    healthState: mcpServerHealthStateSchema,
+    discoveryStatus: mcpCapabilityDiscoveryStatusSchema,
+    catalog: mcpCatalogSnapshotSchema,
+    lastError: z.string().min(1).optional()
+  })
+  .strict();
+
+export type McpServerHealthSnapshot = z.infer<
+  typeof mcpServerHealthSnapshotSchema
+>;
 
 export interface SecretStore {
   get(namespace: string, key: string): Promise<string | null>;

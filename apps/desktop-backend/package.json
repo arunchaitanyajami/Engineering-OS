@@ -13,6 +13,7 @@
     "@engineering-os/config": "workspace:*",
     "@engineering-os/database": "workspace:*",
     "@engineering-os/logger": "workspace:*",
+    "@engineering-os/mcp-gateway": "workspace:*",
     "@engineering-os/plugin-registry": "workspace:*",
     "@engineering-os/plugin-runtime": "workspace:*",
     "@engineering-os/platform": "workspace:*"

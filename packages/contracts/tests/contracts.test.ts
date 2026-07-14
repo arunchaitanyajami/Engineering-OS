@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import { pluginManifestSchema } from "@engineering-os/contracts";
 import {
   mcpServerRegistrationSchema,
+  mcpServerHealthSnapshotSchema,
   pluginRuntimeProtocolVersion,
   pluginRuntimeRequestSchema,
+  registeredMcpServerSchema,
   toolExecutionRequestSchema
 } from "@engineering-os/contracts/unstable-runtime";
 
@@ -277,6 +279,68 @@ describe("mcpServerRegistrationSchema", () => {
             key: "token"
           }
         }
+      }
+    });
+
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("registeredMcpServerSchema", () => {
+  it("accepts plugin-backed stdio registrations with unresolved plugin secret references", () => {
+    const result = registeredMcpServerSchema.safeParse({
+      registrationId: "com.engineering-os.example-mcp:filesystem",
+      serverId: "filesystem",
+      source: {
+        type: "plugin",
+        pluginId: "com.engineering-os.example-mcp"
+      },
+      name: "Filesystem",
+      enabled: true,
+      status: "registered",
+      transport: {
+        type: "stdio",
+        command: "node",
+        args: ["./servers/filesystem/index.js"],
+        cwd: "/managed/plugins/com.engineering-os.example-mcp/0.1.0/servers/filesystem",
+        env: {
+          LOG_LEVEL: "debug",
+          API_TOKEN: {
+            key: "api-token"
+          }
+        },
+        timeoutMs: 10_000
+      }
+    });
+
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("mcpServerHealthSnapshotSchema", () => {
+  it("accepts gateway health snapshots for manifest-backed stdio registrations", () => {
+    const result = mcpServerHealthSnapshotSchema.safeParse({
+      registrationId: "com.engineering-os.example-mcp:filesystem",
+      serverId: "filesystem",
+      source: {
+        type: "plugin",
+        pluginId: "com.engineering-os.example-mcp"
+      },
+      name: "Filesystem",
+      enabled: true,
+      status: "registered",
+      healthState: "unknown",
+      discoveryStatus: "not-started",
+      transport: {
+        type: "stdio",
+        command: "node",
+        args: ["./servers/filesystem/index.js"],
+        cwd: "/managed/plugins/com.engineering-os.example-mcp/0.1.0/servers/filesystem"
+      },
+      catalog: {
+        tools: [],
+        resources: [],
+        prompts: []
       }
     });
 

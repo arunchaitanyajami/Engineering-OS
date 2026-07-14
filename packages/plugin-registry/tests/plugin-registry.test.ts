@@ -1,6 +1,5 @@
 import {
   access,
-  lstat,
   mkdtemp,
   mkdir,
   readdir,

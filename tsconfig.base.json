@@ -15,6 +15,7 @@
     "exactOptionalPropertyTypes": true,
     "paths": {
       "@engineering-os/shared": ["packages/shared/src/index.ts"],
+      "@engineering-os/contracts": ["packages/contracts/src/index.ts"],
       "@engineering-os/core": ["packages/core/src/index.ts"],
       "@engineering-os/config": ["packages/config/src/index.ts"],
       "@engineering-os/logger": ["packages/logger/src/index.ts"],

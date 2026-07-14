@@ -8,3 +8,4 @@ coverage
 apps/desktop/src-tauri/target
 apps/desktop/src-tauri/binaries
 apps/desktop-backend/.engineering-os-dev
+milestones-docx

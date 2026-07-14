@@ -31,6 +31,16 @@ module.exports = {
       }
     },
     {
+      name: "contracts-only-depends-on-shared",
+      severity: "error",
+      from: {
+        path: "^packages/contracts"
+      },
+      to: {
+        path: "^packages/(?!shared)"
+      }
+    },
+    {
       name: "core-does-not-import-ui",
       severity: "error",
       from: {

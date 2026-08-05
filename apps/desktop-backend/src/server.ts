@@ -32,6 +32,7 @@ import {
 } from "@engineering-os/logger";
 import {
   FileMcpUserRegistrationStore,
+  McpUserRegistrationStoreError,
   type McpUserRegistrationStore,
   McpGatewayError,
   McpGatewayService
@@ -302,6 +303,10 @@ const asPublicError = (
         cause: error.cause ?? error
       })
     : error instanceof McpGatewayError
+      ? new BackendPublicError(error.code, error.message, error.statusCode, {
+          cause: error.cause ?? error
+        })
+    : error instanceof McpUserRegistrationStoreError
       ? new BackendPublicError(error.code, error.message, error.statusCode, {
           cause: error.cause ?? error
         })
@@ -806,7 +811,8 @@ export const createBackendContext = async (
   });
   const pluginLifecycle = new PluginLifecycleService({
     pluginRegistry,
-    pluginRuntime
+    pluginRuntime,
+    mcpGateway
   });
   database.runMigrations();
   database.setMetadata("database_status", "ready");
@@ -1159,7 +1165,6 @@ export const createDesktopBackendHandler =
           "PLUGIN_DISABLE_REQUEST_INVALID",
           "Plugin disable request is invalid."
         );
-        await context.mcpGateway.stopServersForPlugin(pluginId);
         writeJson(response, {
           plugin: await context.pluginLifecycle.disablePlugin(pluginId)
         });
@@ -1260,8 +1265,17 @@ export const createDesktopBackendHandler =
           "MCP gateway request is invalid."
         );
 
+        const serverHealth = context.mcpGateway.inspectServerHealth(
+          registrationId
+        );
         writeJson(response, {
-          server: await context.mcpGateway.startServer(registrationId)
+          server:
+            serverHealth.source.type === "plugin"
+              ? await context.pluginLifecycle.startPluginMcpServer(
+                  serverHealth.source.pluginId,
+                  registrationId
+                )
+              : await context.mcpGateway.startServer(registrationId)
         });
         return;
       }
@@ -1278,8 +1292,17 @@ export const createDesktopBackendHandler =
           "MCP gateway request is invalid."
         );
 
+        const serverHealth = context.mcpGateway.inspectServerHealth(
+          registrationId
+        );
         writeJson(response, {
-          server: await context.mcpGateway.stopServer(registrationId)
+          server:
+            serverHealth.source.type === "plugin"
+              ? await context.pluginLifecycle.stopPluginMcpServer(
+                  serverHealth.source.pluginId,
+                  registrationId
+                )
+              : await context.mcpGateway.stopServer(registrationId)
         });
         return;
       }

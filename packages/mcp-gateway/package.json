@@ -10,7 +10,8 @@
     "@engineering-os/contracts": "workspace:*",
     "@engineering-os/logger": "workspace:*",
     "@engineering-os/plugin-registry": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.29.0"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "ajv": "^8.20.0"
   },
   "scripts": {
     "build": "tsc --noEmit",

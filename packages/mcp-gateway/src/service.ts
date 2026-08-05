@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
+import { Ajv } from "ajv";
+import type { ErrorObject, ValidateFunction } from "ajv";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import {
@@ -11,6 +13,8 @@ import {
   toolExecutionRequestSchema,
   mcpCatalogSnapshotSchema,
   mcpServerRegistrationSchema,
+  promptDescriptorSchema,
+  resourceDescriptorSchema,
   type CapabilityContent,
   type McpCapabilityDiscoveryStatus,
   mcpServerHealthSnapshotSchema,
@@ -22,12 +26,14 @@ import {
   type ResourceDescriptor,
   type RegisteredMcpServer,
   type McpToolExecutionRecord,
+  toolDescriptorSchema,
   type ToolDescriptor,
   type ToolExecutionRequest,
   type ToolExecutionResult
 } from "@engineering-os/contracts/unstable-runtime";
 import type { Logger } from "@engineering-os/logger";
 import type { InstalledPlugin } from "@engineering-os/plugin-registry";
+import { ZodError } from "zod";
 
 import { ManagedStdioClientTransport } from "./managed-stdio-client-transport.js";
 
@@ -41,6 +47,9 @@ export interface McpGatewayServiceOptions {
   readonly logger: Logger;
   readonly systemRegistrations?: readonly McpServerRegistration[];
   readonly userRegistrations?: readonly McpServerRegistration[];
+  readonly startupTimeoutMs?: number;
+  readonly startupStabilityPeriodMs?: number;
+  readonly shutdownGracePeriodMs?: number;
 }
 
 export interface McpGatewayCapabilityQuery {
@@ -68,6 +77,18 @@ export interface McpToolExecutionPageOptions extends McpToolExecutionListOptions
 export interface McpToolExecutionPage {
   readonly executions: readonly McpToolExecutionRecord[];
   readonly nextCursor?: string;
+}
+
+interface ToolArgumentValidationIssue {
+  readonly path: string;
+  readonly message: string;
+  readonly keyword: string;
+}
+
+interface StartupDeadline {
+  readonly signal: AbortSignal;
+  remainingMs(): number;
+  dispose(): void;
 }
 
 export class McpGatewayError extends Error {
@@ -289,6 +310,7 @@ const isAbortError = (error: unknown): boolean =>
 
 const MAX_RETAINED_TOOL_EXECUTIONS = 200;
 const TOOL_EXECUTION_RETENTION_MS = 15 * 60 * 1_000;
+const MAX_DISCOVERY_PAGES = 100;
 
 const toPromptArgumentsSchema = (
   prompt: McpListedPrompt | undefined
@@ -370,10 +392,17 @@ const normalizePromptDescriptor = (
 
 export class McpGatewayService {
   private readonly logger: Logger;
+  private readonly schemaValidator = new Ajv({
+    allErrors: true,
+    allowUnionTypes: true,
+    strict: false,
+    validateSchema: true
+  });
   private readonly gatewayRegistrations = new Map<
     string,
     McpServerRegistration
   >();
+  private readonly toolValidators = new Map<string, ValidateFunction>();
   private readonly toolExecutions = new Map<string, ManagedToolExecution>();
   private readonly toolExecutionOrder: string[] = [];
   private readonly runtimes = new Map<string, ManagedMcpServerRuntime>();
@@ -394,9 +423,12 @@ export class McpGatewayService {
     this.logger = options.logger.child({
       component: "mcp-gateway"
     });
-    this.startupTimeoutMs = DEFAULT_STARTUP_TIMEOUT_MS;
-    this.startupStabilityPeriodMs = DEFAULT_STARTUP_STABILITY_PERIOD_MS;
-    this.shutdownGracePeriodMs = DEFAULT_SHUTDOWN_GRACE_PERIOD_MS;
+    this.startupTimeoutMs =
+      options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
+    this.startupStabilityPeriodMs =
+      options.startupStabilityPeriodMs ?? DEFAULT_STARTUP_STABILITY_PERIOD_MS;
+    this.shutdownGracePeriodMs =
+      options.shutdownGracePeriodMs ?? DEFAULT_SHUTDOWN_GRACE_PERIOD_MS;
     this.processEnv = process.env;
 
     for (const registration of options.systemRegistrations ?? []) {
@@ -614,6 +646,7 @@ export class McpGatewayService {
       }
 
       this.gatewayRegistrations.delete(registrationId);
+      this.setCatalog(registrationId, createEmptyCatalog());
       this.catalogs.delete(registrationId);
       this.discoveryStatuses.delete(registrationId);
       this.lastErrors.delete(registrationId);
@@ -759,6 +792,7 @@ export class McpGatewayService {
   ): Promise<ToolExecutionResult> {
     const parsedRequest = toolExecutionRequestSchema.parse(request);
     const resolvedTool = this.resolveToolExecution(parsedRequest);
+    this.validateToolArguments(resolvedTool.tool, parsedRequest.arguments);
     const timeoutMs = this.getToolExecutionTimeoutMs(resolvedTool.registration);
     const startedAt = Date.now();
 
@@ -934,15 +968,18 @@ export class McpGatewayService {
       transport.onerror = (error) => {
         this.handleRuntimeFailure(runtime, error);
       };
+      const startupDeadline = this.createStartupDeadline(registrationId);
 
       try {
         await runtime.client.connect(runtime.transport, {
-          timeout: this.startupTimeoutMs
+          signal: startupDeadline.signal,
+          timeout: startupDeadline.remainingMs()
         });
-        await this.discoverCapabilities(runtime, registration);
+        await this.discoverCapabilities(runtime, registration, startupDeadline);
         await this.waitForChildStability(
           runtime,
-          this.startupStabilityPeriodMs
+          this.startupStabilityPeriodMs,
+          startupDeadline.signal
         );
         this.throwIfDisposing();
         this.runtimes.set(registrationId, runtime);
@@ -957,15 +994,20 @@ export class McpGatewayService {
         this.lastErrors.delete(registrationId);
       } catch (error) {
         await this.safeCloseTransport(runtime);
-        this.catalogs.set(registrationId, createEmptyCatalog());
+        this.setCatalog(registrationId, createEmptyCatalog());
         this.discoveryStatuses.set(registrationId, "failed");
-        this.lastErrors.set(registrationId, this.toErrorMessage(error));
+        this.lastErrors.set(
+          registrationId,
+          this.toStartupErrorMessage(registrationId, error)
+        );
         throw new McpGatewayError(
           "MCP_GATEWAY_SERVER_START_FAILED",
           `MCP server '${registrationId}' failed to start.`,
           502,
           error
         );
+      } finally {
+        startupDeadline.dispose();
       }
 
       runtime.logger.info("Started MCP stdio server.", {
@@ -1099,6 +1141,109 @@ export class McpGatewayService {
     return registration.transport.type === "stdio"
       ? (registration.transport.timeoutMs ?? 30_000)
       : 30_000;
+  }
+
+  private createStartupDeadline(registrationId: string): StartupDeadline {
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, this.startupTimeoutMs);
+
+    return {
+      signal: controller.signal,
+      remainingMs: () => {
+        if (controller.signal.aborted) {
+          throw this.createStartupTimeoutError(registrationId);
+        }
+
+        const remainingMs =
+          this.startupTimeoutMs - (Date.now() - startedAt);
+
+        if (remainingMs <= 0) {
+          throw this.createStartupTimeoutError(registrationId);
+        }
+
+        return remainingMs;
+      },
+      dispose: () => {
+        clearTimeout(timeout);
+      }
+    };
+  }
+
+  private createStartupTimeoutError(registrationId: string): McpGatewayError {
+    return new McpGatewayError(
+      "MCP_GATEWAY_STARTUP_TIMEOUT",
+      `MCP server '${registrationId}' did not complete startup before the timeout expired.`,
+      504
+    );
+  }
+
+  private validateToolArguments(
+    tool: ToolDescriptor,
+    argumentsValue: ToolExecutionRequest["arguments"]
+  ): void {
+    const validator =
+      this.toolValidators.get(tool.id) ?? this.compileToolValidator(tool);
+
+    this.toolValidators.set(tool.id, validator);
+
+    if (validator(argumentsValue)) {
+      return;
+    }
+
+    throw new McpGatewayError(
+      "MCP_GATEWAY_TOOL_ARGUMENTS_INVALID",
+      `Arguments for tool '${tool.id}' are invalid.`,
+      400,
+      this.normalizeToolArgumentValidationErrors(validator.errors)
+    );
+  }
+
+  private normalizeToolArgumentValidationErrors(
+    errors: readonly ErrorObject[] | null | undefined
+  ): readonly ToolArgumentValidationIssue[] {
+    return (errors ?? []).slice(0, 10).map((error) => ({
+      path: error.instancePath || "/",
+      message: error.message ?? "Invalid value.",
+      keyword: error.keyword
+    }));
+  }
+
+  private setCatalog(
+    registrationId: string,
+    catalog: McpCatalogSnapshot
+  ): void {
+    const previousCatalog = this.catalogs.get(registrationId);
+    const compiledValidators = new Map<string, ValidateFunction>();
+
+    for (const tool of catalog.tools) {
+      compiledValidators.set(tool.id, this.compileToolValidator(tool));
+    }
+
+    for (const tool of previousCatalog?.tools ?? []) {
+      this.toolValidators.delete(tool.id);
+    }
+
+    for (const [toolId, validator] of compiledValidators) {
+      this.toolValidators.set(toolId, validator);
+    }
+
+    this.catalogs.set(registrationId, catalog);
+  }
+
+  private compileToolValidator(tool: ToolDescriptor): ValidateFunction {
+    try {
+      return this.schemaValidator.compile(tool.inputSchema);
+    } catch (error) {
+      throw new McpGatewayError(
+        "MCP_GATEWAY_TOOL_SCHEMA_INVALID",
+        `Tool '${tool.id}' exposes an invalid JSON Schema.`,
+        502,
+        error
+      );
+    }
   }
 
   private getToolExecutionListLimit(
@@ -1300,7 +1445,7 @@ export class McpGatewayService {
     }
 
     this.gatewayRegistrations.set(registrationId, registration);
-    this.catalogs.set(registrationId, createEmptyCatalog());
+    this.setCatalog(registrationId, createEmptyCatalog());
     this.discoveryStatuses.set(registrationId, "not-started");
   }
 
@@ -1390,7 +1535,8 @@ export class McpGatewayService {
 
   private waitForChildStability(
     runtime: ManagedMcpServerRuntime,
-    stabilityPeriodMs: number
+    stabilityPeriodMs: number,
+    signal: AbortSignal
   ): Promise<void> {
     const child = runtime.transport.childProcess;
 
@@ -1409,6 +1555,10 @@ export class McpGatewayService {
         cleanup();
         resolve();
       }, stabilityPeriodMs);
+      const handleAbort = () => {
+        cleanup();
+        reject(this.createStartupTimeoutError(runtime.registrationId));
+      };
       const handleError = (error: unknown) => {
         cleanup();
         reject(error);
@@ -1425,10 +1575,17 @@ export class McpGatewayService {
       };
       const cleanup = () => {
         clearTimeout(timeout);
+        signal.removeEventListener("abort", handleAbort);
         child.off("error", handleError);
         child.off("exit", handleExit);
       };
 
+      if (signal.aborted) {
+        handleAbort();
+        return;
+      }
+
+      signal.addEventListener("abort", handleAbort, { once: true });
       child.once("error", handleError);
       child.once("exit", handleExit);
     });
@@ -1436,41 +1593,60 @@ export class McpGatewayService {
 
   private async discoverCapabilities(
     runtime: ManagedMcpServerRuntime,
-    registration: RegisteredMcpServer
+    registration: RegisteredMcpServer,
+    startupDeadline: StartupDeadline
   ): Promise<void> {
     const serverCapabilities = runtime.client.getServerCapabilities();
     const tools = serverCapabilities?.tools
-      ? await this.listAllTools(runtime)
+      ? await this.listAllTools(runtime, startupDeadline)
       : [];
     const resources = serverCapabilities?.resources
-      ? await this.listAllResources(runtime)
+      ? await this.listAllResources(runtime, startupDeadline)
       : [];
     const prompts = serverCapabilities?.prompts
-      ? await this.listAllPrompts(runtime)
+      ? await this.listAllPrompts(runtime, startupDeadline)
       : [];
     const catalog = mcpCatalogSnapshotSchema.parse({
-      tools: tools.map((tool) => normalizeToolDescriptor(registration, tool)),
+      tools: tools.map((tool) =>
+        this.normalizeDiscoveredToolDescriptor(registration, tool)
+      ),
       resources: resources.map((resource) =>
-        normalizeResourceDescriptor(registration, resource)
+        this.normalizeDiscoveredResourceDescriptor(registration, resource)
       ),
       prompts: prompts.map((prompt) =>
-        normalizePromptDescriptor(registration, prompt)
+        this.normalizeDiscoveredPromptDescriptor(registration, prompt)
       )
     });
 
-    this.catalogs.set(registration.registrationId, catalog);
+    this.setCatalog(registration.registrationId, catalog);
     this.discoveryStatuses.set(registration.registrationId, "discovered");
   }
 
   private async listAllTools(
-    runtime: ManagedMcpServerRuntime
+    runtime: ManagedMcpServerRuntime,
+    startupDeadline: StartupDeadline
   ): Promise<readonly McpListedTool[]> {
     const tools: McpListedTool[] = [];
     let cursor: string | undefined;
+    const seenCursors = new Set<string>();
+    let pageCount = 0;
 
     while (true) {
+      if (pageCount >= MAX_DISCOVERY_PAGES) {
+        throw new McpGatewayError(
+          "MCP_GATEWAY_DISCOVERY_PAGE_LIMIT_EXCEEDED",
+          `MCP tool discovery for '${runtime.registrationId}' exceeded the maximum page count.`,
+          502
+        );
+      }
+
+      pageCount += 1;
       const result = await runtime.client.listTools(
-        cursor ? { cursor } : undefined
+        cursor ? { cursor } : undefined,
+        {
+          signal: startupDeadline.signal,
+          timeout: startupDeadline.remainingMs()
+        }
       );
       tools.push(...result.tools);
 
@@ -1478,19 +1654,44 @@ export class McpGatewayService {
         return tools;
       }
 
+      if (seenCursors.has(result.nextCursor)) {
+        throw new McpGatewayError(
+          "MCP_GATEWAY_DISCOVERY_CURSOR_REPEATED",
+          `MCP tool discovery for '${runtime.registrationId}' returned a repeated cursor.`,
+          502
+        );
+      }
+
+      seenCursors.add(result.nextCursor);
       cursor = result.nextCursor;
     }
   }
 
   private async listAllResources(
-    runtime: ManagedMcpServerRuntime
+    runtime: ManagedMcpServerRuntime,
+    startupDeadline: StartupDeadline
   ): Promise<readonly McpListedResource[]> {
     const resources: McpListedResource[] = [];
     let cursor: string | undefined;
+    const seenCursors = new Set<string>();
+    let pageCount = 0;
 
     while (true) {
+      if (pageCount >= MAX_DISCOVERY_PAGES) {
+        throw new McpGatewayError(
+          "MCP_GATEWAY_DISCOVERY_PAGE_LIMIT_EXCEEDED",
+          `MCP resource discovery for '${runtime.registrationId}' exceeded the maximum page count.`,
+          502
+        );
+      }
+
+      pageCount += 1;
       const result = await runtime.client.listResources(
-        cursor ? { cursor } : undefined
+        cursor ? { cursor } : undefined,
+        {
+          signal: startupDeadline.signal,
+          timeout: startupDeadline.remainingMs()
+        }
       );
       resources.push(...result.resources);
 
@@ -1498,19 +1699,44 @@ export class McpGatewayService {
         return resources;
       }
 
+      if (seenCursors.has(result.nextCursor)) {
+        throw new McpGatewayError(
+          "MCP_GATEWAY_DISCOVERY_CURSOR_REPEATED",
+          `MCP resource discovery for '${runtime.registrationId}' returned a repeated cursor.`,
+          502
+        );
+      }
+
+      seenCursors.add(result.nextCursor);
       cursor = result.nextCursor;
     }
   }
 
   private async listAllPrompts(
-    runtime: ManagedMcpServerRuntime
+    runtime: ManagedMcpServerRuntime,
+    startupDeadline: StartupDeadline
   ): Promise<readonly McpListedPrompt[]> {
     const prompts: McpListedPrompt[] = [];
     let cursor: string | undefined;
+    const seenCursors = new Set<string>();
+    let pageCount = 0;
 
     while (true) {
+      if (pageCount >= MAX_DISCOVERY_PAGES) {
+        throw new McpGatewayError(
+          "MCP_GATEWAY_DISCOVERY_PAGE_LIMIT_EXCEEDED",
+          `MCP prompt discovery for '${runtime.registrationId}' exceeded the maximum page count.`,
+          502
+        );
+      }
+
+      pageCount += 1;
       const result = await runtime.client.listPrompts(
-        cursor ? { cursor } : undefined
+        cursor ? { cursor } : undefined,
+        {
+          signal: startupDeadline.signal,
+          timeout: startupDeadline.remainingMs()
+        }
       );
       prompts.push(...result.prompts);
 
@@ -1518,6 +1744,15 @@ export class McpGatewayService {
         return prompts;
       }
 
+      if (seenCursors.has(result.nextCursor)) {
+        throw new McpGatewayError(
+          "MCP_GATEWAY_DISCOVERY_CURSOR_REPEATED",
+          `MCP prompt discovery for '${runtime.registrationId}' returned a repeated cursor.`,
+          502
+        );
+      }
+
+      seenCursors.add(result.nextCursor);
       cursor = result.nextCursor;
     }
   }
@@ -1598,6 +1833,140 @@ export class McpGatewayService {
     }
 
     return [];
+  }
+
+  private normalizeDiscoveredToolDescriptor(
+    registration: RegisteredMcpServer,
+    tool: McpListedTool
+  ): ToolDescriptor {
+    const normalizedTool = normalizeToolDescriptor(registration, tool);
+
+    try {
+      return toolDescriptorSchema.parse(normalizedTool);
+    } catch (error) {
+      if (
+        error instanceof ZodError &&
+        error.issues.some((issue) => issue.path[0] === "inputSchema")
+      ) {
+        throw new McpGatewayError(
+          "MCP_GATEWAY_TOOL_SCHEMA_INVALID",
+          `Tool '${normalizedTool.id}' exposes an invalid JSON Schema.`,
+          502,
+          this.normalizeDiscoveryValidationIssues(error)
+        );
+      }
+
+      throw new McpGatewayError(
+        "MCP_GATEWAY_TOOL_DESCRIPTOR_INVALID",
+        `Tool '${normalizedTool.id}' returned an invalid descriptor during discovery.`,
+        502,
+        error instanceof ZodError
+          ? this.normalizeDiscoveryValidationIssues(error)
+          : error
+      );
+    }
+  }
+
+  private normalizeDiscoveredResourceDescriptor(
+    registration: RegisteredMcpServer,
+    resource: McpListedResource
+  ): ResourceDescriptor {
+    const normalizedResource = normalizeResourceDescriptor(registration, resource);
+
+    try {
+      return resourceDescriptorSchema.parse(normalizedResource);
+    } catch (error) {
+      throw new McpGatewayError(
+        "MCP_GATEWAY_RESOURCE_DESCRIPTOR_INVALID",
+        `Resource '${normalizedResource.id}' returned an invalid descriptor during discovery.`,
+        502,
+        error instanceof ZodError
+          ? this.normalizeDiscoveryValidationIssues(error)
+          : error
+      );
+    }
+  }
+
+  private normalizeDiscoveredPromptDescriptor(
+    registration: RegisteredMcpServer,
+    prompt: McpListedPrompt
+  ): PromptDescriptor {
+    const normalizedPrompt = normalizePromptDescriptor(registration, prompt);
+
+    try {
+      return promptDescriptorSchema.parse(normalizedPrompt);
+    } catch (error) {
+      throw new McpGatewayError(
+        "MCP_GATEWAY_PROMPT_DESCRIPTOR_INVALID",
+        `Prompt '${normalizedPrompt.id}' returned an invalid descriptor during discovery.`,
+        502,
+        error instanceof ZodError
+          ? this.normalizeDiscoveryValidationIssues(error)
+          : error
+      );
+    }
+  }
+
+  private normalizeDiscoveryValidationIssues(
+    error: ZodError
+  ): readonly {
+    readonly path: string;
+    readonly message: string;
+  }[] {
+    return error.issues.slice(0, 10).map((issue) => ({
+      path: issue.path.length > 0 ? `/${issue.path.join("/")}` : "/",
+      message: issue.message
+    }));
+  }
+
+  private toStartupErrorMessage(
+    registrationId: string,
+    error: unknown
+  ): string {
+    if (error instanceof McpGatewayError) {
+      return error.message;
+    }
+
+    if (this.isStartupTimeoutFailure(error)) {
+      return this.createStartupTimeoutError(registrationId).message;
+    }
+
+    return this.toErrorMessage(error);
+  }
+
+  private isStartupTimeoutFailure(error: unknown): boolean {
+    if (error instanceof McpGatewayError) {
+      return error.code === "MCP_GATEWAY_STARTUP_TIMEOUT";
+    }
+
+    if (isAbortError(error)) {
+      return true;
+    }
+
+    if (
+      error instanceof McpError &&
+      typeof error.message === "string" &&
+      error.message.includes("AbortError")
+    ) {
+      return true;
+    }
+
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "cause" in error &&
+      this.isStartupTimeoutFailure(error.cause)
+    ) {
+      return true;
+    }
+
+    return (
+      typeof error === "object" &&
+      error !== null &&
+      "message" in error &&
+      typeof error.message === "string" &&
+      error.message.includes("AbortError")
+    );
   }
 
   private toErrorMessage(error: unknown): string {

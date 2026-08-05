@@ -71,9 +71,20 @@ describe("desktop backend server", () => {
                     properties: {
                       path: {
                         type: "string"
+                      },
+                      mode: {
+                        type: "string"
                       }
                     },
-                    required: ["path"]
+                    anyOf: [
+                      {
+                        required: ["path"]
+                      },
+                      {
+                        required: ["mode"]
+                      }
+                    ],
+                    additionalProperties: false
                   },
                   outputSchema: {
                     type: "object",
@@ -1302,6 +1313,49 @@ describe("desktop backend server", () => {
     });
   });
 
+  it("rejects persisting plaintext secret-like user MCP environment values through the backend API", async () => {
+    runtime = await startRuntime();
+    const { serverDirectory } =
+      await createLocalCommandServer(appDataDirectory);
+
+    const registerResponse = await fetch(
+      `${runtime.baseUrl}/mcp/servers/register`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({
+          registration: {
+            id: "secret-filesystem",
+            source: {
+              type: "user"
+            },
+            name: "Secret Filesystem",
+            transport: {
+              type: "stdio",
+              command: "node",
+              args: ["./index.js"],
+              cwd: serverDirectory,
+              env: {
+                API_KEY: "plaintext-secret"
+              }
+            },
+            enabled: true,
+            timeoutMs: 10_000
+          }
+        })
+      }
+    );
+
+    expect(registerResponse.status).toBe(400);
+    await expect(registerResponse.json()).resolves.toEqual({
+      code: "MCP_USER_REGISTRATION_LITERAL_SECRET_FORBIDDEN",
+      message:
+        "User MCP registration 'secret-filesystem' cannot persist literal environment values for sensitive key 'API_KEY'."
+    });
+  });
+
   it("executes MCP tools through the backend API", async () => {
     runtime = await startRuntime();
     const { serverDirectory } =
@@ -1384,6 +1438,70 @@ describe("desktop backend server", () => {
           }
         }
       }
+    });
+  });
+
+  it("rejects invalid MCP tool arguments through the backend API", async () => {
+    runtime = await startRuntime();
+    const { serverDirectory } =
+      await createLocalCommandServer(appDataDirectory);
+
+    await fetch(`${runtime.baseUrl}/mcp/servers/register`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        registration: {
+          id: "validated-filesystem",
+          source: {
+            type: "user"
+          },
+          name: "Validated Filesystem",
+          transport: {
+            type: "stdio",
+            command: "node",
+            args: ["./index.js"],
+            cwd: serverDirectory
+          },
+          enabled: true,
+          timeoutMs: 10_000
+        }
+      })
+    });
+    await fetch(`${runtime.baseUrl}/mcp/servers/start`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        registrationId: "user:validated-filesystem"
+      })
+    });
+
+    const response = await fetch(`${runtime.baseUrl}/mcp/tools/execute`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        toolId: "user.validated-filesystem.tool.read_workspace",
+        arguments: {},
+        executionContext: {
+          actor: {
+            type: "user"
+          },
+          correlationId: "corr-invalid-args",
+          approvalMode: "none"
+        }
+      })
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      code: "MCP_GATEWAY_TOOL_ARGUMENTS_INVALID",
+      message:
+        "Arguments for tool 'user.validated-filesystem.tool.read_workspace' are invalid."
     });
   });
 

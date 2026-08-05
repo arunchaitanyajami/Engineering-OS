@@ -1,11 +1,19 @@
-import type { PluginRuntimeHealthSnapshot } from "@engineering-os/contracts/unstable-runtime";
+import type {
+  McpServerHealthSnapshot,
+  PluginRuntimeHealthSnapshot
+} from "@engineering-os/contracts/unstable-runtime";
+import { McpGatewayError, McpGatewayService } from "@engineering-os/mcp-gateway";
 import type { InstalledPlugin } from "@engineering-os/plugin-registry";
-import { PluginRegistryService } from "@engineering-os/plugin-registry";
+import {
+  PluginRegistryError,
+  PluginRegistryService
+} from "@engineering-os/plugin-registry";
 import { PluginRuntimeService } from "@engineering-os/plugin-runtime";
 
 export interface PluginLifecycleServiceOptions {
   readonly pluginRegistry: PluginRegistryService;
   readonly pluginRuntime: PluginRuntimeService;
+  readonly mcpGateway: McpGatewayService;
 }
 
 export class PluginLifecycleService {
@@ -21,6 +29,7 @@ export class PluginLifecycleService {
 
   async disablePlugin(pluginId: string): Promise<InstalledPlugin> {
     return this.runWithLifecycleLock(pluginId, async () => {
+      await this.options.mcpGateway.stopServersForPlugin(pluginId);
       await this.options.pluginRuntime.stopPlugin(pluginId);
       return this.options.pluginRegistry.disableInstalledPlugin(pluginId);
     });
@@ -36,6 +45,27 @@ export class PluginLifecycleService {
     return this.runWithLifecycleLock(pluginId, async () =>
       this.options.pluginRuntime.stopPlugin(pluginId)
     );
+  }
+
+  startPluginMcpServer(
+    pluginId: string,
+    registrationId: string
+  ): Promise<McpServerHealthSnapshot> {
+    return this.runWithLifecycleLock(pluginId, async () => {
+      this.requireEnabledPlugin(pluginId);
+      this.requirePluginOwnedRegistration(pluginId, registrationId);
+      return this.options.mcpGateway.startServer(registrationId);
+    });
+  }
+
+  stopPluginMcpServer(
+    pluginId: string,
+    registrationId: string
+  ): Promise<McpServerHealthSnapshot> {
+    return this.runWithLifecycleLock(pluginId, async () => {
+      this.requirePluginOwnedRegistration(pluginId, registrationId);
+      return this.options.mcpGateway.stopServer(registrationId);
+    });
   }
 
   private async runWithLifecycleLock<T>(
@@ -62,6 +92,46 @@ export class PluginLifecycleService {
       if (this.lifecycleLocks.get(pluginId) === queuedLock) {
         this.lifecycleLocks.delete(pluginId);
       }
+    }
+  }
+
+  private requireEnabledPlugin(pluginId: string): InstalledPlugin {
+    const plugin = this.options.pluginRegistry.getInstalledPlugin(pluginId);
+
+    if (!plugin) {
+      throw new PluginRegistryError(
+        "PLUGIN_NOT_FOUND",
+        `Plugin '${pluginId}' is not registered.`,
+        404
+      );
+    }
+
+    if (!plugin.enabled) {
+      throw new PluginRegistryError(
+        "PLUGIN_DISABLED",
+        `Plugin '${pluginId}' is disabled.`,
+        409
+      );
+    }
+
+    return plugin;
+  }
+
+  private requirePluginOwnedRegistration(
+    pluginId: string,
+    registrationId: string
+  ): void {
+    const server = this.options.mcpGateway.inspectServerHealth(registrationId);
+
+    if (
+      server.source.type !== "plugin" ||
+      server.source.pluginId !== pluginId
+    ) {
+      throw new McpGatewayError(
+        "MCP_GATEWAY_PLUGIN_OWNERSHIP_MISMATCH",
+        `MCP server '${registrationId}' is not owned by plugin '${pluginId}'.`,
+        409
+      );
     }
   }
 }

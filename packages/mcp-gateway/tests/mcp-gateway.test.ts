@@ -1092,7 +1092,13 @@ describe("McpGatewayService", () => {
                       {
                         name: "broken_tool",
                         inputSchema: {
-                          type: 17
+                          type: "object",
+                          properties: {
+                            foo: {
+                              type: "string",
+                              minimum: "not-a-number"
+                            }
+                          }
                         }
                       }
                     ]

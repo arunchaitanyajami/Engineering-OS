@@ -85,6 +85,11 @@ interface ToolArgumentValidationIssue {
   readonly keyword: string;
 }
 
+interface ParsedValidationIssue {
+  readonly path: readonly (string | number)[];
+  readonly message?: string;
+}
+
 interface StartupDeadline {
   readonly signal: AbortSignal;
   remainingMs(): number;
@@ -1596,30 +1601,34 @@ export class McpGatewayService {
     registration: RegisteredMcpServer,
     startupDeadline: StartupDeadline
   ): Promise<void> {
-    const serverCapabilities = runtime.client.getServerCapabilities();
-    const tools = serverCapabilities?.tools
-      ? await this.listAllTools(runtime, startupDeadline)
-      : [];
-    const resources = serverCapabilities?.resources
-      ? await this.listAllResources(runtime, startupDeadline)
-      : [];
-    const prompts = serverCapabilities?.prompts
-      ? await this.listAllPrompts(runtime, startupDeadline)
-      : [];
-    const catalog = mcpCatalogSnapshotSchema.parse({
-      tools: tools.map((tool) =>
-        this.normalizeDiscoveredToolDescriptor(registration, tool)
-      ),
-      resources: resources.map((resource) =>
-        this.normalizeDiscoveredResourceDescriptor(registration, resource)
-      ),
-      prompts: prompts.map((prompt) =>
-        this.normalizeDiscoveredPromptDescriptor(registration, prompt)
-      )
-    });
+    try {
+      const serverCapabilities = runtime.client.getServerCapabilities();
+      const tools = serverCapabilities?.tools
+        ? await this.listAllTools(runtime, startupDeadline)
+        : [];
+      const resources = serverCapabilities?.resources
+        ? await this.listAllResources(runtime, startupDeadline)
+        : [];
+      const prompts = serverCapabilities?.prompts
+        ? await this.listAllPrompts(runtime, startupDeadline)
+        : [];
+      const catalog = mcpCatalogSnapshotSchema.parse({
+        tools: tools.map((tool) =>
+          this.normalizeDiscoveredToolDescriptor(registration, tool)
+        ),
+        resources: resources.map((resource) =>
+          this.normalizeDiscoveredResourceDescriptor(registration, resource)
+        ),
+        prompts: prompts.map((prompt) =>
+          this.normalizeDiscoveredPromptDescriptor(registration, prompt)
+        )
+      });
 
-    this.setCatalog(registration.registrationId, catalog);
-    this.discoveryStatuses.set(registration.registrationId, "discovered");
+      this.setCatalog(registration.registrationId, catalog);
+      this.discoveryStatuses.set(registration.registrationId, "discovered");
+    } catch (error) {
+      throw this.normalizeDiscoveryFailure(registration, error);
+    }
   }
 
   private async listAllTools(
@@ -1919,12 +1928,157 @@ export class McpGatewayService {
     }));
   }
 
+  private normalizeDiscoveryFailure(
+    registration: RegisteredMcpServer,
+    error: unknown
+  ): unknown {
+    if (error instanceof McpGatewayError) {
+      return error;
+    }
+
+    const schemaError = this.createToolSchemaDiscoveryError(registration, error);
+
+    if (schemaError) {
+      return schemaError;
+    }
+
+    return error;
+  }
+
+  private createToolSchemaDiscoveryError(
+    registration: RegisteredMcpServer,
+    error: unknown
+  ): McpGatewayError | null {
+    const issues = this.readValidationIssues(error);
+    const schemaIssue = issues?.find((issue) =>
+      issue.path.some((segment) => segment === "inputSchema")
+    );
+
+    if (!schemaIssue) {
+      return null;
+    }
+
+    const toolName = this.readDiscoveredToolName(error, schemaIssue);
+    const toolId = toolName
+      ? createCapabilityIdentifier(registration, "tool", toolName)
+      : undefined;
+
+    return new McpGatewayError(
+      "MCP_GATEWAY_TOOL_SCHEMA_INVALID",
+      toolId
+        ? `Tool '${toolId}' exposes an invalid JSON Schema.`
+        : "A discovered tool exposes an invalid JSON Schema.",
+      502,
+      issues?.slice(0, 10).map((issue) => ({
+        path: issue.path.length > 0 ? `/${issue.path.join("/")}` : "/",
+        message: issue.message ?? "Invalid value."
+      }))
+    );
+  }
+
+  private readValidationIssues(error: unknown): readonly ParsedValidationIssue[] | null {
+    if (error instanceof ZodError) {
+      return error.issues;
+    }
+
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "issues" in error &&
+      Array.isArray(error.issues)
+    ) {
+      return error.issues.filter(
+        (issue): issue is ParsedValidationIssue =>
+          typeof issue === "object" &&
+          issue !== null &&
+          "path" in issue &&
+          Array.isArray(issue.path)
+      );
+    }
+
+    if (error instanceof Error) {
+      try {
+        const parsedIssues: unknown = JSON.parse(error.message);
+
+        if (
+          Array.isArray(parsedIssues) &&
+          parsedIssues.every(
+            (issue) =>
+              typeof issue === "object" &&
+              issue !== null &&
+              "path" in issue &&
+              Array.isArray(issue.path)
+          )
+        ) {
+          return parsedIssues as ParsedValidationIssue[];
+        }
+      } catch {
+        return null;
+      }
+    }
+
+    return null;
+  }
+
+  private readDiscoveredToolName(
+    error: unknown,
+    issue: ParsedValidationIssue
+  ): string | undefined {
+    const toolsIndex = issue.path.indexOf("tools");
+
+    if (toolsIndex === -1) {
+      return undefined;
+    }
+
+    const toolIndex = issue.path[toolsIndex + 1];
+
+    if (typeof toolIndex !== "number") {
+      return undefined;
+    }
+
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "input" in error &&
+      typeof error.input === "object" &&
+      error.input !== null &&
+      "tools" in error.input &&
+      Array.isArray(error.input.tools)
+    ) {
+      const tool = error.input.tools[toolIndex];
+
+      if (
+        typeof tool === "object" &&
+        tool !== null &&
+        "name" in tool &&
+        typeof tool.name === "string" &&
+        tool.name.length > 0
+      ) {
+        return tool.name;
+      }
+    }
+
+    return undefined;
+  }
+
   private toStartupErrorMessage(
     registrationId: string,
     error: unknown
   ): string {
     if (error instanceof McpGatewayError) {
       return error.message;
+    }
+
+    const registration = this.listRegisteredServers().find(
+      (candidate) => candidate.registrationId === registrationId
+    );
+
+    if (registration) {
+      const schemaError = this.createToolSchemaDiscoveryError(registration, error);
+
+      if (schemaError) {
+        return schemaError.message;
+      }
     }
 
     if (this.isStartupTimeoutFailure(error)) {

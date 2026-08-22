@@ -24,6 +24,8 @@ import {
   grantPluginPermissionsRequestSchema,
   mcpToolExecutionControlRequestSchema,
   mcpServerRegistrationSchema,
+  pluginRuntimeInvokeCapabilityRequestSchema,
+  pluginRuntimeReadConfigurationRequestSchema,
   revokePluginPermissionRequestSchema,
   setToolPolicyRequestSchema,
   toolExecutionRequestSchema
@@ -846,6 +848,9 @@ export const createBackendContext = async (
       checkPermission: (input) => permissionEngine.checkPluginPermission(input),
       requestPermission: (input) =>
         permissionEngine.requestPluginPermission(input)
+    },
+    configurationBroker: {
+      getConfiguration: () => null
     }
   });
   const pluginLifecycle = new PluginLifecycleService({
@@ -1610,6 +1615,49 @@ export const createDesktopBackendHandler =
 
         writeJson(response, {
           runtime: await context.pluginLifecycle.stopPlugin(pluginId)
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/plugins/runtime/read-configuration"
+      ) {
+        const { pluginId, key } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          pluginRuntimeReadConfigurationRequestSchema,
+          "PLUGIN_RUNTIME_REQUEST_INVALID",
+          "Plugin runtime request is invalid."
+        );
+
+        writeJson(response, {
+          configuration: await context.pluginRuntime.readPluginConfiguration(
+            pluginId,
+            key
+          )
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/plugins/runtime/invoke-capability"
+      ) {
+        const { pluginId, capability, payload } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          pluginRuntimeInvokeCapabilityRequestSchema,
+          "PLUGIN_RUNTIME_REQUEST_INVALID",
+          "Plugin runtime request is invalid."
+        );
+
+        writeJson(response, {
+          capability: await context.pluginRuntime.invokePluginCapability(
+            pluginId,
+            capability,
+            payload
+          )
         });
         return;
       }

@@ -10,10 +10,13 @@ import {
 } from "@engineering-os/contracts";
 import {
   checkPluginPermissionBrokerResponseSchema,
+  invokePluginCapabilityResponseSchema,
   pluginRuntimeBrokerRequestSchema,
   pluginRuntimeHealthSnapshotSchema,
   pluginRuntimeRequestSchema,
   pluginRuntimeProtocolVersion,
+  readConfigurationResponseSchema,
+  readPluginConfigurationBrokerResponseSchema,
   requestPluginPermissionBrokerResponseSchema,
   rpcResponseSchema,
   type EngineeringOsPlugin,
@@ -30,6 +33,11 @@ import {
   assertIpcMessageWithinLimit,
   estimateIpcMessageBytes
 } from "./ipc-message-size.js";
+import {
+  assertSupportedProtocolVersion,
+  PluginRuntimeProtocolError,
+  readProtocolVersion
+} from "./protocol.js";
 
 interface RuntimePluginState {
   pluginId: string | null;
@@ -69,13 +77,13 @@ const sendBrokerRequest = async (
   request: PluginRuntimeBrokerRequest
 ): Promise<unknown> => {
   if (!process.send) {
-    throw new Error("Plugin permission broker is unavailable in this runtime.");
+    throw new Error("Plugin runtime broker is unavailable in this worker.");
   }
 
   return new Promise((resolve, reject) => {
     const timeout = globalThis.setTimeout(() => {
       pendingBrokerResponses.delete(request.requestId);
-      reject(new Error("Plugin permission broker request timed out."));
+      reject(new Error("Plugin runtime broker request timed out."));
     }, BROKER_REQUEST_TIMEOUT_MS);
 
     pendingBrokerResponses.set(request.requestId, {
@@ -87,7 +95,7 @@ const sendBrokerRequest = async (
     try {
       assertIpcMessageWithinLimit(
         request,
-        "Plugin permission broker IPC request"
+        "Plugin runtime broker IPC request"
       );
     } catch (error) {
       clearTimeout(timeout);
@@ -107,6 +115,37 @@ const sendBrokerRequest = async (
     });
   });
 };
+
+const createConfigurationApi = (): EngineeringOsPluginContext["configuration"] => ({
+  async get<TValue>(key: string): Promise<TValue | null> {
+    if (!state.pluginId) {
+      return null;
+    }
+
+    const response = await sendBrokerRequest(
+      pluginRuntimeBrokerRequestSchema.parse({
+        protocolVersion: pluginRuntimeProtocolVersion,
+        type: "broker-read-configuration",
+        requestId: randomUUID(),
+        pluginId: state.pluginId,
+        key
+      })
+    );
+
+    return readPluginConfigurationBrokerResponseSchema.parse(response)
+      .value as TValue | null;
+  },
+  async set() {
+    return Promise.reject(
+      createUnsupportedMilestone23Error("Plugin configuration persistence")
+    );
+  },
+  async delete() {
+    return Promise.reject(
+      createUnsupportedMilestone23Error("Plugin configuration persistence")
+    );
+  }
+});
 
 const createContext = (
   manifest: PluginManifest
@@ -140,23 +179,7 @@ const createContext = (
       );
     }
   },
-  configuration: {
-    async get() {
-      return Promise.reject(
-        createUnsupportedMilestone23Error("Plugin configuration access")
-      );
-    },
-    async set() {
-      return Promise.reject(
-        createUnsupportedMilestone23Error("Plugin configuration persistence")
-      );
-    },
-    async delete() {
-      return Promise.reject(
-        createUnsupportedMilestone23Error("Plugin configuration persistence")
-      );
-    }
-  },
+  configuration: createConfigurationApi(),
   secrets: {
     async get() {
       return Promise.reject(
@@ -324,14 +347,30 @@ const sendResponse = (
   process.send(payload);
 };
 
-const asRpcError = (error: unknown): RpcError => ({
-  code:
-    error instanceof Error && error.name
-      ? error.name.toUpperCase()
-      : "PLUGIN_RUNTIME_ERROR",
-  message:
-    error instanceof Error ? error.message : "Plugin runtime request failed."
-});
+const asRpcError = (error: unknown): RpcError => {
+  if (error instanceof PluginRuntimeProtocolError) {
+    return {
+      code: "PLUGIN_RUNTIME_PROTOCOL_UNSUPPORTED",
+      message: error.message
+    };
+  }
+
+  return {
+    code:
+      error instanceof Error && error.name
+        ? error.name.toUpperCase()
+        : "PLUGIN_RUNTIME_ERROR",
+    message:
+      error instanceof Error ? error.message : "Plugin runtime request failed."
+  };
+};
+
+class PluginRuntimeCapabilityUnsupportedError extends Error {
+  constructor(capability: string) {
+    super(`Plugin capability '${capability}' is not supported.`);
+    this.name = "PLUGIN_RUNTIME_CAPABILITY_UNSUPPORTED";
+  }
+}
 
 const resolvePluginExport = (moduleExports: Record<string, unknown>) => {
   const candidate = (moduleExports.default ?? moduleExports.plugin) as
@@ -478,10 +517,23 @@ const handleRequest = async (request: PluginRuntimeRequest) => {
       return snapshot;
     }
 
-    case "read-configuration":
+    case "read-configuration": {
+      ensureRequestTargetsInitializedPlugin(request.pluginId);
+
+      const value = await createConfigurationApi().get(request.key);
+
+      return readConfigurationResponseSchema.parse({ value });
+    }
+
     case "invoke-plugin-capability": {
+      ensureRequestTargetsInitializedPlugin(request.pluginId);
+      throw new PluginRuntimeCapabilityUnsupportedError(request.capability);
+    }
+
+    default: {
+      const exhaustiveRequest: never = request;
       throw new Error(
-        `Plugin runtime request '${request.type}' is not implemented in Milestone 2.3.`
+        `Plugin runtime request '${String(exhaustiveRequest)}' is not supported.`
       );
     }
   }
@@ -526,13 +578,35 @@ export const runPluginRuntimeWorker = () => {
           pending.reject(
             new Error(
               parsedResponse.data.error?.message ??
-                "Plugin permission broker request failed."
+                "Plugin runtime broker request failed."
             )
           );
           return;
         }
 
         pending.resolve(parsedResponse.data.data);
+        return;
+      }
+    }
+
+    const protocolVersion = readProtocolVersion(message);
+
+    if (protocolVersion !== undefined) {
+      try {
+        assertSupportedProtocolVersion(protocolVersion);
+      } catch (error) {
+        const requestId =
+          typeof message === "object" &&
+          message !== null &&
+          "requestId" in message &&
+          typeof (message as { requestId: unknown }).requestId === "string"
+            ? (message as { requestId: string }).requestId
+            : "unknown-request";
+
+        sendResponse(requestId, {
+          success: false,
+          error: asRpcError(error)
+        });
         return;
       }
     }

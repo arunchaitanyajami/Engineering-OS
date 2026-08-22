@@ -442,4 +442,36 @@ describe("pluginRuntimeRequestSchema", () => {
 
     expect(result.success).toBe(true);
   });
+
+  it("accepts read-configuration and invoke-plugin-capability requests", () => {
+    const readConfiguration = pluginRuntimeRequestSchema.safeParse({
+      protocolVersion: pluginRuntimeProtocolVersion,
+      type: "read-configuration",
+      requestId: "req-read",
+      pluginId: "com.engineering-os.example.plugin",
+      key: "theme"
+    });
+    const invokeCapability = pluginRuntimeRequestSchema.safeParse({
+      protocolVersion: pluginRuntimeProtocolVersion,
+      type: "invoke-plugin-capability",
+      requestId: "req-invoke",
+      pluginId: "com.engineering-os.example.plugin",
+      capability: "settings.render",
+      payload: {}
+    });
+
+    expect(readConfiguration.success).toBe(true);
+    expect(invokeCapability.success).toBe(true);
+  });
+
+  it("rejects unsupported protocol versions", () => {
+    const result = pluginRuntimeRequestSchema.safeParse({
+      protocolVersion: "99",
+      type: "health-check",
+      requestId: "req-unsupported",
+      pluginId: "com.engineering-os.example.plugin"
+    });
+
+    expect(result.success).toBe(false);
+  });
 });

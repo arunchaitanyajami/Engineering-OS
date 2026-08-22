@@ -8,15 +8,21 @@ import {
   activatePluginRequestSchema,
   healthCheckRequestSchema,
   initializePluginRequestSchema,
+  invokePluginCapabilityResponseSchema,
   pluginRuntimeBrokerRequestSchema,
   pluginRuntimeHealthSnapshotSchema,
   pluginRuntimeProtocolVersion,
+  readConfigurationRequestSchema,
+  readConfigurationResponseSchema,
   rpcResponseSchema,
+  invokePluginCapabilityRequestSchema,
   shutdownPluginRequestSchema,
+  type InvokePluginCapabilityResponse,
   type PluginRuntimeBrokerRequest,
   type PluginRuntimeHealthSnapshot,
   type PluginRuntimeStatus,
-  type PermissionGrantDecision
+  type PermissionGrantDecision,
+  type ReadConfigurationResponse
 } from "@engineering-os/contracts/unstable-runtime";
 import type { Logger } from "@engineering-os/logger";
 import {
@@ -28,6 +34,10 @@ import {
   assertIpcMessageWithinLimit,
   estimateIpcMessageBytes
 } from "./ipc-message-size.js";
+import {
+  assertSupportedProtocolVersion,
+  PluginRuntimeProtocolError
+} from "./protocol.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
@@ -98,11 +108,19 @@ export interface PluginPermissionBroker {
   }): PermissionGrantDecision;
 }
 
+export interface PluginConfigurationBroker {
+  getConfiguration(input: {
+    readonly pluginId: string;
+    readonly key: string;
+  }): unknown | null;
+}
+
 export interface PluginRuntimeServiceOptions {
   readonly pluginResolver: InstalledPluginResolver;
   readonly logger: Logger;
   readonly worker: PluginRuntimeWorkerOptions;
   readonly permissionBroker?: PluginPermissionBroker;
+  readonly configurationBroker?: PluginConfigurationBroker;
   readonly requestTimeoutMs?: number;
   readonly startupTimeoutMs?: number;
   readonly shutdownGracePeriodMs?: number;
@@ -223,6 +241,48 @@ export class PluginRuntimeService {
 
     this.snapshots.set(pluginId, mergedSnapshot);
     return mergedSnapshot;
+  }
+
+  async readPluginConfiguration(
+    pluginId: string,
+    key: string
+  ): Promise<ReadConfigurationResponse> {
+    const runtime = this.requireRunningRuntime(pluginId);
+    const response = await this.sendRequest(
+      runtime,
+      readConfigurationRequestSchema.parse({
+        protocolVersion: pluginRuntimeProtocolVersion,
+        type: "read-configuration",
+        requestId: randomUUID(),
+        pluginId,
+        key
+      }),
+      this.requestTimeoutMs
+    );
+
+    return readConfigurationResponseSchema.parse(response.data);
+  }
+
+  async invokePluginCapability(
+    pluginId: string,
+    capability: string,
+    payload: Record<string, unknown> = {}
+  ): Promise<InvokePluginCapabilityResponse> {
+    const runtime = this.requireRunningRuntime(pluginId);
+    const response = await this.sendRequest(
+      runtime,
+      invokePluginCapabilityRequestSchema.parse({
+        protocolVersion: pluginRuntimeProtocolVersion,
+        type: "invoke-plugin-capability",
+        requestId: randomUUID(),
+        pluginId,
+        capability,
+        payload
+      }),
+      this.requestTimeoutMs
+    );
+
+    return invokePluginCapabilityResponseSchema.parse(response.data);
   }
 
   async startPlugin(pluginId: string): Promise<PluginRuntimeHealthSnapshot> {
@@ -498,6 +558,20 @@ export class PluginRuntimeService {
     });
   }
 
+  private requireRunningRuntime(pluginId: string): ManagedPluginRuntime {
+    const runtime = this.runtimes.get(pluginId);
+
+    if (!runtime) {
+      throw new PluginRuntimeError(
+        "PLUGIN_RUNTIME_NOT_RUNNING",
+        `Plugin '${pluginId}' runtime is not running.`,
+        409
+      );
+    }
+
+    return runtime;
+  }
+
   private requireRunnableInstalledPlugin(pluginId: string): InstalledPlugin {
     const installedPlugin =
       this.options.pluginResolver.getInstalledPlugin(pluginId);
@@ -662,6 +736,30 @@ export class PluginRuntimeService {
     const brokerRequest = pluginRuntimeBrokerRequestSchema.safeParse(message);
 
     if (brokerRequest.success) {
+      try {
+        assertSupportedProtocolVersion(brokerRequest.data.protocolVersion);
+      } catch (error) {
+        if (!runtime.child.connected) {
+          return;
+        }
+
+        runtime.child.send(
+          rpcResponseSchema.parse({
+            protocolVersion: pluginRuntimeProtocolVersion,
+            requestId: brokerRequest.data.requestId,
+            success: false,
+            error: {
+              code: "PLUGIN_RUNTIME_PROTOCOL_UNSUPPORTED",
+              message:
+                error instanceof PluginRuntimeProtocolError
+                  ? error.message
+                  : "Unsupported plugin runtime protocol version."
+            }
+          })
+        );
+        return;
+      }
+
       void this.handleBrokerRequest(runtime, brokerRequest.data);
       return;
     }
@@ -713,58 +811,125 @@ export class PluginRuntimeService {
     }
 
     try {
-      const broker = this.options.permissionBroker;
+      switch (request.type) {
+        case "broker-check-permission": {
+          const broker = this.options.permissionBroker;
 
-      if (!broker) {
-        runtime.child.send(
-          rpcResponseSchema.parse({
-            protocolVersion: pluginRuntimeProtocolVersion,
-            requestId: request.requestId,
-            success: false,
-            error: {
-              code: "PLUGIN_PERMISSION_BROKER_UNAVAILABLE",
-              message: "Plugin permission broker is unavailable."
-            }
-          })
-        );
-        return;
-      }
-
-      if (request.type === "broker-check-permission") {
-        runtime.child.send(
-          rpcResponseSchema.parse({
-            protocolVersion: pluginRuntimeProtocolVersion,
-            requestId: request.requestId,
-            success: true,
-            data: {
-              granted: broker.checkPermission({
-                pluginId: request.pluginId,
-                scope: request.scope as PermissionScope,
-                ...(request.constraint ? { constraint: request.constraint } : {}),
-                ...(request.sessionId ? { sessionId: request.sessionId } : {})
+          if (!broker) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_PERMISSION_BROKER_UNAVAILABLE",
+                  message: "Plugin permission broker is unavailable."
+                }
               })
-            }
-          })
-        );
-        return;
-      }
-
-      runtime.child.send(
-        rpcResponseSchema.parse({
-          protocolVersion: pluginRuntimeProtocolVersion,
-          requestId: request.requestId,
-          success: true,
-          data: {
-            decision: broker.requestPermission({
-              pluginId: request.pluginId,
-              scope: request.scope as PermissionScope,
-              reason: request.reason,
-              ...(request.constraint ? { constraint: request.constraint } : {}),
-              ...(request.sessionId ? { sessionId: request.sessionId } : {})
-            })
+            );
+            return;
           }
-        })
-      );
+
+          runtime.child.send(
+            rpcResponseSchema.parse({
+              protocolVersion: pluginRuntimeProtocolVersion,
+              requestId: request.requestId,
+              success: true,
+              data: {
+                granted: broker.checkPermission({
+                  pluginId: request.pluginId,
+                  scope: request.scope as PermissionScope,
+                  ...(request.constraint
+                    ? { constraint: request.constraint }
+                    : {}),
+                  ...(request.sessionId ? { sessionId: request.sessionId } : {})
+                })
+              }
+            })
+          );
+          return;
+        }
+
+        case "broker-request-permission": {
+          const broker = this.options.permissionBroker;
+
+          if (!broker) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_PERMISSION_BROKER_UNAVAILABLE",
+                  message: "Plugin permission broker is unavailable."
+                }
+              })
+            );
+            return;
+          }
+
+          runtime.child.send(
+            rpcResponseSchema.parse({
+              protocolVersion: pluginRuntimeProtocolVersion,
+              requestId: request.requestId,
+              success: true,
+              data: {
+                decision: broker.requestPermission({
+                  pluginId: request.pluginId,
+                  scope: request.scope as PermissionScope,
+                  reason: request.reason,
+                  ...(request.constraint
+                    ? { constraint: request.constraint }
+                    : {}),
+                  ...(request.sessionId ? { sessionId: request.sessionId } : {})
+                })
+              }
+            })
+          );
+          return;
+        }
+
+        case "broker-read-configuration": {
+          const broker = this.options.configurationBroker;
+
+          if (!broker) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_CONFIGURATION_BROKER_UNAVAILABLE",
+                  message: "Plugin configuration broker is unavailable."
+                }
+              })
+            );
+            return;
+          }
+
+          runtime.child.send(
+            rpcResponseSchema.parse({
+              protocolVersion: pluginRuntimeProtocolVersion,
+              requestId: request.requestId,
+              success: true,
+              data: {
+                value: broker.getConfiguration({
+                  pluginId: request.pluginId,
+                  key: request.key
+                })
+              }
+            })
+          );
+          return;
+        }
+
+        default: {
+          const exhaustiveRequest: never = request;
+          throw new Error(
+            `Unsupported plugin runtime broker request '${String(exhaustiveRequest)}'.`
+          );
+        }
+      }
     } catch (error) {
       runtime.child.send(
         rpcResponseSchema.parse({
@@ -772,11 +937,11 @@ export class PluginRuntimeService {
           requestId: request.requestId,
           success: false,
           error: {
-            code: "PLUGIN_PERMISSION_BROKER_FAILED",
+            code: "PLUGIN_RUNTIME_BROKER_FAILED",
             message:
               error instanceof Error
                 ? error.message
-                : "Plugin permission broker request failed."
+                : "Plugin runtime broker request failed."
           }
         })
       );

@@ -690,6 +690,49 @@ export type InvokePluginCapabilityRequest = z.infer<
 >;
 export type HealthCheckRequest = z.infer<typeof healthCheckRequestSchema>;
 
+export const readConfigurationResponseSchema = z
+  .object({
+    value: z.unknown().nullable()
+  })
+  .strict();
+
+export type ReadConfigurationResponse = z.infer<
+  typeof readConfigurationResponseSchema
+>;
+
+export const invokePluginCapabilityResponseSchema = z
+  .object({
+    result: jsonObjectSchema
+  })
+  .strict();
+
+export type InvokePluginCapabilityResponse = z.infer<
+  typeof invokePluginCapabilityResponseSchema
+>;
+
+export const pluginRuntimeReadConfigurationRequestSchema = z
+  .object({
+    pluginId: pluginIdSchema,
+    key: keySchema
+  })
+  .strict();
+
+export type PluginRuntimeReadConfigurationRequest = z.infer<
+  typeof pluginRuntimeReadConfigurationRequestSchema
+>;
+
+export const pluginRuntimeInvokeCapabilityRequestSchema = z
+  .object({
+    pluginId: pluginIdSchema,
+    capability: z.string().min(1),
+    payload: jsonObjectSchema.default({})
+  })
+  .strict();
+
+export type PluginRuntimeInvokeCapabilityRequest = z.infer<
+  typeof pluginRuntimeInvokeCapabilityRequestSchema
+>;
+
 export const checkPluginPermissionBrokerRequestSchema = z
   .object({
     protocolVersion: pluginRuntimeProtocolVersionSchema,
@@ -723,9 +766,34 @@ export type RequestPluginPermissionBrokerRequest = z.infer<
   typeof requestPluginPermissionBrokerRequestSchema
 >;
 
+export const readPluginConfigurationBrokerRequestSchema = z
+  .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
+    type: z.literal("broker-read-configuration"),
+    requestId: z.string().min(1),
+    pluginId: pluginIdSchema,
+    key: keySchema
+  })
+  .strict();
+
+export type ReadPluginConfigurationBrokerRequest = z.infer<
+  typeof readPluginConfigurationBrokerRequestSchema
+>;
+
+export const readPluginConfigurationBrokerResponseSchema = z
+  .object({
+    value: z.unknown().nullable()
+  })
+  .strict();
+
+export type ReadPluginConfigurationBrokerResponse = z.infer<
+  typeof readPluginConfigurationBrokerResponseSchema
+>;
+
 export const pluginRuntimeBrokerRequestSchema = z.discriminatedUnion("type", [
   checkPluginPermissionBrokerRequestSchema,
-  requestPluginPermissionBrokerRequestSchema
+  requestPluginPermissionBrokerRequestSchema,
+  readPluginConfigurationBrokerRequestSchema
 ]);
 
 export type PluginRuntimeBrokerRequest = z.infer<

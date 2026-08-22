@@ -2351,6 +2351,47 @@ describe("desktop backend server", () => {
       }
     });
 
+    const readConfigurationResponse = await fetch(
+      `${runtime.baseUrl}/plugins/runtime/read-configuration`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({
+          pluginId: "com.engineering-os.runtime-test",
+          key: "theme"
+        })
+      }
+    );
+
+    expect(readConfigurationResponse.status).toBe(200);
+    await expect(readConfigurationResponse.json()).resolves.toMatchObject({
+      configuration: {
+        value: null
+      }
+    });
+
+    const invokeCapabilityResponse = await fetch(
+      `${runtime.baseUrl}/plugins/runtime/invoke-capability`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({
+          pluginId: "com.engineering-os.runtime-test",
+          capability: "settings.render",
+          payload: {}
+        })
+      }
+    );
+
+    expect(invokeCapabilityResponse.status).toBe(502);
+    await expect(invokeCapabilityResponse.json()).resolves.toMatchObject({
+      code: "PLUGIN_RUNTIME_CAPABILITY_UNSUPPORTED"
+    });
+
     const stopResponse = await fetch(
       `${runtime.baseUrl}/plugins/runtime/stop`,
       {

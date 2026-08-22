@@ -1,6 +1,6 @@
 [package]
 name = "engineering-os-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Engineering OS desktop shell"
 authors = ["Engineering OS"]
 edition = "2021"

@@ -230,7 +230,7 @@ export function ApplicationStoreProvider({
   const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null);
   const [localServicesStatus, setLocalServicesStatus] =
     useState<LocalServicesStatus | null>(null);
-  const [appVersion, setAppVersion] = useState("0.1.0");
+  const [appVersion, setAppVersion] = useState("0.2.0");
   const [sessions, setSessions] = useState<readonly EngineeringSession[]>([]);
   const [isCommandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [bootstrapCounter, setBootstrapCounter] = useState(0);

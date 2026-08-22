@@ -22,15 +22,30 @@ const workspaceAliasEntries = [
   ],
   ["@engineering-os/plugin-runtime", "../packages/plugin-runtime/src/index.ts"],
   ["@engineering-os/platform", "../packages/platform/src/index.ts"],
-  ["@engineering-os/security", "../packages/security/src/index.ts"],
   ["@engineering-os/events", "../packages/events/src/index.ts"],
   ["@engineering-os/ui", "../packages/ui/src/index.tsx"],
   ["@engineering-os/testing", "../packages/testing/src/index.ts"]
 ] as const;
 
-export const workspaceAliases = workspaceAliasEntries.map(
-  ([packageName, relativePath]) => ({
+export const workspaceAliases = [
+  ...workspaceAliasEntries.map(([packageName, relativePath]) => ({
     find: packageName,
     replacement: fileURLToPath(new URL(relativePath, import.meta.url))
-  })
+  })),
+  {
+    find: /^@engineering-os\/security\/server$/,
+    replacement: fileURLToPath(
+      new URL("../packages/security/src/server.ts", import.meta.url)
+    )
+  },
+  {
+    find: /^@engineering-os\/security$/,
+    replacement: fileURLToPath(
+      new URL("../packages/security/src/index.ts", import.meta.url)
+    )
+  }
+].filter(
+  (alias) =>
+    alias.find !== "@engineering-os/security" &&
+    alias.find !== "@engineering-os/security/server"
 );

@@ -3,7 +3,7 @@ import {
   type LogEntry,
   type LogTransport
 } from "@engineering-os/logger";
-import { type AuditEvent } from "@engineering-os/security";
+import { type AuditEvent } from "@engineering-os/contracts/unstable-runtime";
 
 export class InMemoryLogTransport implements LogTransport {
   readonly entries: LogEntry[] = [];

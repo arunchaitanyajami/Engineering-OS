@@ -12,7 +12,7 @@ import {
   SecretService,
   UnavailablePlatformSecretStore,
   type PlatformSecretStore
-} from "@engineering-os/security";
+} from "@engineering-os/security/server";
 
 class MemoryPlatformSecretStore implements PlatformSecretStore {
   private readonly values = new Map<string, string>();

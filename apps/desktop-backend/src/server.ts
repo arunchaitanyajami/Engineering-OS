@@ -67,7 +67,7 @@ import {
   createApplicationSecretStore,
   SecretService,
   SecretServiceError
-} from "@engineering-os/security";
+} from "@engineering-os/security/server";
 import {
   ApplicationDatabase,
   type ApplicationDatabaseHealth

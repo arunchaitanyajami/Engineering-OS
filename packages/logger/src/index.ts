@@ -1,5 +1,8 @@
+import {
+  REDACTED_VALUE,
+  redactKeys
+} from "@engineering-os/contracts/unstable-runtime";
 import { isRecord } from "@engineering-os/shared";
-import { REDACTED_VALUE, redactKeys } from "@engineering-os/security";
 
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error";
 

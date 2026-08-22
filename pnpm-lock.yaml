@@ -192,9 +192,9 @@ importers:
 
   packages/logger:
     dependencies:
-      '@engineering-os/security':
+      '@engineering-os/contracts':
         specifier: workspace:*
-        version: link:../security
+        version: link:../contracts
       '@engineering-os/shared':
         specifier: workspace:*
         version: link:../shared
@@ -286,12 +286,12 @@ importers:
 
   packages/testing:
     dependencies:
+      '@engineering-os/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@engineering-os/logger':
         specifier: workspace:*
         version: link:../logger
-      '@engineering-os/security':
-        specifier: workspace:*
-        version: link:../security
 
   packages/ui:
     dependencies:

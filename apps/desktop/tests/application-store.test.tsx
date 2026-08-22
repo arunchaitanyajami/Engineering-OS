@@ -68,7 +68,7 @@ const createLocalServicesStatus = (): LocalServicesStatus => ({
 const createDesktopPlatform = (
   overrides: Partial<DesktopPlatform> = {}
 ): DesktopPlatform => ({
-  getAppVersion: async () => "0.1.0",
+  getAppVersion: async () => "0.2.0",
   getPlatformInfo: async () => createPlatformInfo(),
   initializeLocalServices: async () => createLocalServicesStatus(),
   loadPersistedConfig: async () => null,

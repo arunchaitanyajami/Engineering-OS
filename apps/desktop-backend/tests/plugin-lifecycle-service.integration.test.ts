@@ -242,7 +242,7 @@ describe("PluginLifecycleService", () => {
     const pluginRegistry = new PluginRegistryService({
       repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "plugin-lifecycle-test" }),
-      engineeringOsVersion: "0.1.0",
+      engineeringOsVersion: "0.2.0",
       installationsRootPath
     });
     const workerWrapperPath = join(

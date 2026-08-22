@@ -47,7 +47,7 @@ describe("PermissionEngineService", () => {
     const pluginRegistry = new PluginRegistryService({
       repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "permission-engine-test" }),
-      engineeringOsVersion: "0.1.0",
+      engineeringOsVersion: "0.2.0",
       installationsRootPath: join(fixturesDirectory, "managed-plugins")
     });
 
@@ -323,7 +323,7 @@ describe("PermissionEngineService", () => {
     const pluginRegistry = new PluginRegistryService({
       repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "permission-engine-test" }),
-      engineeringOsVersion: "0.1.0",
+      engineeringOsVersion: "0.2.0",
       installationsRootPath: join(fixturesDirectory, "managed-plugins")
     });
 

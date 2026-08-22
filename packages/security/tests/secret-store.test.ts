@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { EncryptedFileSecretStore, SecretService } from "@engineering-os/security";
+import { EncryptedFileSecretStore, SecretService } from "@engineering-os/security/server";
 
 describe("EncryptedFileSecretStore", () => {
   it("stores and retrieves encrypted secret values by namespace", async () => {

@@ -206,7 +206,7 @@ const DEFAULT_MAX_RESTARTS_PER_WINDOW = 3;
 const DEFAULT_RESTART_BACKOFF_MS = 250;
 const MCP_GATEWAY_CLIENT_INFO = {
   name: "engineering-os-mcp-gateway",
-  version: "0.1.0"
+  version: "0.2.0"
 } as const;
 
 type McpListedTool = Awaited<ReturnType<Client["listTools"]>>["tools"][number];

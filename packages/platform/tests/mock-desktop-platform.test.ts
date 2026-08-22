@@ -9,6 +9,6 @@ describe("MockDesktopPlatform", () => {
     await platform.openExternalUrl("https://engineering-os.dev");
 
     expect(platform.openedUrls).toEqual(["https://engineering-os.dev"]);
-    await expect(platform.getAppVersion()).resolves.toBe("0.1.0");
+    await expect(platform.getAppVersion()).resolves.toBe("0.2.0");
   });
 });

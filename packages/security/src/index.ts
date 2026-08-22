@@ -24,22 +24,7 @@ export {
 } from "@engineering-os/contracts/unstable-runtime";
 
 export { SecretServiceError } from "./errors.js";
-export { EncryptedFileSecretStore } from "./encrypted-file-secret-store.js";
 export { assertValidSecretKey, assertValidSecretNamespace } from "./namespace.js";
-export { SecretService } from "./secret-service.js";
-export {
-  AuditingSecretStore,
-  type SecretAuditAction,
-  type SecretAuditLogger,
-  type SecretAuditOutcome,
-  type SecretAuditRecord
-} from "./auditing-secret-store.js";
-export { createApplicationSecretStore } from "./create-application-secret-store.js";
-export { LayeredSecretStore } from "./layered-secret-store.js";
-export {
-  UnavailablePlatformSecretStore,
-  type PlatformSecretStore
-} from "./platform-secret-store.js";
 export {
   findLiteralSecretEnvironmentViolations,
   isSensitiveEnvironmentKey
@@ -48,7 +33,9 @@ export {
 import { permissionScope } from "@engineering-os/contracts";
 
 export type ConfirmationMode =
-  "none" | "user-confirmation" | "dual-confirmation";
+  | "none"
+  | "user-confirmation"
+  | "dual-confirmation";
 
 export interface ConfirmationPolicy {
   readonly mode: ConfirmationMode;

@@ -14,7 +14,7 @@ import {
 import {
   EncryptedFileSecretStore,
   SecretService
-} from "@engineering-os/security";
+} from "@engineering-os/security/server";
 import {
   PluginRegistryService,
   SqlitePluginRegistryRepository
@@ -295,7 +295,7 @@ describe("McpGatewayService", () => {
     const pluginRegistry = new PluginRegistryService({
       repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "mcp-gateway-test" }),
-      engineeringOsVersion: "0.1.0",
+      engineeringOsVersion: "0.2.0",
       installationsRootPath: join(fixturesDirectory, "managed-plugins")
     });
     const gateway = new McpGatewayService({

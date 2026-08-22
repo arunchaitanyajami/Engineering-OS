@@ -825,7 +825,7 @@ describe("desktop backend server", () => {
   it("rejects incompatible plugin packages during registration", async () => {
     runtime = await startRuntime();
     const packageDirectory = await createLocalPluginPackage(appDataDirectory, {
-      engineeringOsRange: ">=0.2.0"
+      engineeringOsRange: ">=0.3.0"
     });
 
     const response = await fetch(`${runtime.baseUrl}/plugins/register-local`, {
@@ -840,7 +840,7 @@ describe("desktop backend server", () => {
     await expect(response.json()).resolves.toEqual({
       code: "PLUGIN_VERSION_INCOMPATIBLE",
       message:
-        "Plugin 'com.engineering-os.filesystem' requires Engineering OS '>=0.2.0' but current version is '0.1.0'."
+        "Plugin 'com.engineering-os.filesystem' requires Engineering OS '>=0.3.0' but current version is '0.2.0'."
     });
   });
 

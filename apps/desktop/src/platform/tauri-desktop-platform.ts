@@ -143,7 +143,7 @@ const requestDesktopBackend = async <T>(
 export class TauriDesktopPlatform implements DesktopPlatform {
   async getAppVersion(): Promise<string> {
     if (!isTauriEnvironment()) {
-      return "0.1.0-dev";
+      return "0.2.0-dev";
     }
 
     return invoke<string>("get_app_version");

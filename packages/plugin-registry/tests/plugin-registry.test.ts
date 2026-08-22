@@ -107,7 +107,7 @@ describe("PluginRegistryService", () => {
     const registry = new PluginRegistryService({
       repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "plugin-registry-test" }),
-      engineeringOsVersion: "0.1.0",
+      engineeringOsVersion: "0.2.0",
       installationsRootPath
     });
     const packageDirectory = await createLocalPluginPackage(fixturesDirectory);
@@ -157,11 +157,11 @@ describe("PluginRegistryService", () => {
     const registry = new PluginRegistryService({
       repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "plugin-registry-test" }),
-      engineeringOsVersion: "0.1.0",
+      engineeringOsVersion: "0.2.0",
       installationsRootPath
     });
     const packageDirectory = await createLocalPluginPackage(fixturesDirectory, {
-      engineeringOsRange: ">=0.2.0"
+      engineeringOsRange: ">=0.3.0"
     });
 
     await expect(
@@ -186,7 +186,7 @@ describe("PluginRegistryService", () => {
     const registry = new PluginRegistryService({
       repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "plugin-registry-test" }),
-      engineeringOsVersion: "0.1.0",
+      engineeringOsVersion: "0.2.0",
       installationsRootPath
     });
     const packageDirectory = await createLocalPluginPackage(fixturesDirectory, {
@@ -215,7 +215,7 @@ describe("PluginRegistryService", () => {
     const registry = new PluginRegistryService({
       repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "plugin-registry-test" }),
-      engineeringOsVersion: "0.1.0",
+      engineeringOsVersion: "0.2.0",
       installationsRootPath
     });
     const firstPackageDirectory = await createLocalPluginPackage(
@@ -256,7 +256,7 @@ describe("PluginRegistryService", () => {
     const registry = new PluginRegistryService({
       repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "plugin-registry-test" }),
-      engineeringOsVersion: "0.1.0",
+      engineeringOsVersion: "0.2.0",
       installationsRootPath
     });
     const packageDirectory = await createLocalPluginPackage(fixturesDirectory, {
@@ -293,7 +293,7 @@ describe("PluginRegistryService", () => {
     const registry = new PluginRegistryService({
       repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "plugin-registry-test" }),
-      engineeringOsVersion: "0.1.0",
+      engineeringOsVersion: "0.2.0",
       installationsRootPath
     });
     const packageDirectory = await createLocalPluginPackage(fixturesDirectory, {
@@ -337,7 +337,7 @@ describe("PluginRegistryService", () => {
     const registry = new PluginRegistryService({
       repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "plugin-registry-test" }),
-      engineeringOsVersion: "0.1.0",
+      engineeringOsVersion: "0.2.0",
       installationsRootPath
     });
     const packageDirectory = await createLocalPluginPackage(fixturesDirectory, {
@@ -392,7 +392,7 @@ describe("PluginRegistryService", () => {
     const registry = new PluginRegistryService({
       repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "plugin-registry-test" }),
-      engineeringOsVersion: "0.1.0",
+      engineeringOsVersion: "0.2.0",
       installationsRootPath
     });
     const packageDirectory = await createLocalPluginPackage(fixturesDirectory, {
@@ -426,7 +426,7 @@ describe("PluginRegistryService", () => {
     const registry = new PluginRegistryService({
       repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "plugin-registry-test" }),
-      engineeringOsVersion: "0.1.0",
+      engineeringOsVersion: "0.2.0",
       installationsRootPath
     });
     const packageDirectory = await createLocalPluginPackage(fixturesDirectory, {
@@ -459,7 +459,7 @@ describe("PluginRegistryService", () => {
     const registry = new PluginRegistryService({
       repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "plugin-registry-test" }),
-      engineeringOsVersion: "0.1.0",
+      engineeringOsVersion: "0.2.0",
       installationsRootPath
     });
     const packageDirectory = await createLocalPluginPackage(fixturesDirectory, {

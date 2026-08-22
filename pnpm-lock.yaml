@@ -76,6 +76,9 @@ importers:
       '@engineering-os/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@engineering-os/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@engineering-os/logger':
         specifier: workspace:*
         version: link:../../packages/logger

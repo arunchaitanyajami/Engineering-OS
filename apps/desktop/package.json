@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@engineering-os/config": "workspace:*",
+    "@engineering-os/contracts": "workspace:*",
     "@engineering-os/logger": "workspace:*",
     "@engineering-os/platform": "workspace:*",
     "@engineering-os/ui": "workspace:*",

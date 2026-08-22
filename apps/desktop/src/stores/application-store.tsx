@@ -190,8 +190,8 @@ export const buildStatusEntries = (
     {
       id: "mcp",
       label: "MCP",
-      value: "Future milestone",
-      tone: "neutral"
+      value: "Local gateway",
+      tone: "success"
     },
     {
       id: "provider",

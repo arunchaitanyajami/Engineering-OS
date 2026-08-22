@@ -44,8 +44,4 @@ export const workspaceAliases = [
       new URL("../packages/security/src/index.ts", import.meta.url)
     )
   }
-].filter(
-  (alias) =>
-    alias.find !== "@engineering-os/security" &&
-    alias.find !== "@engineering-os/security/server"
-);
+];

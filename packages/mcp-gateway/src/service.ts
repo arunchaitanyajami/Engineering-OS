@@ -29,7 +29,9 @@ import {
   toolDescriptorSchema,
   type ToolDescriptor,
   type ToolExecutionRequest,
-  type ToolExecutionResult
+  type ToolExecutionResult,
+  type ToolAnnotations,
+  type ToolRiskLevel
 } from "@engineering-os/contracts/unstable-runtime";
 import type { Logger } from "@engineering-os/logger";
 import type { InstalledPlugin } from "@engineering-os/plugin-registry";
@@ -42,6 +44,12 @@ export interface InstalledPluginCatalog {
   getInstalledPlugin(pluginId: string): InstalledPlugin | null;
 }
 
+export interface ToolRiskClassificationInput {
+  readonly id: string;
+  readonly name: string;
+  readonly annotations?: ToolAnnotations;
+}
+
 export interface McpGatewayServiceOptions {
   readonly installedPlugins: InstalledPluginCatalog;
   readonly logger: Logger;
@@ -50,6 +58,9 @@ export interface McpGatewayServiceOptions {
   readonly startupTimeoutMs?: number;
   readonly startupStabilityPeriodMs?: number;
   readonly shutdownGracePeriodMs?: number;
+  readonly classifyToolRisk?: (
+    input: ToolRiskClassificationInput
+  ) => ToolRiskLevel;
 }
 
 export interface McpGatewayCapabilityQuery {
@@ -293,18 +304,32 @@ const createCapabilityIdentifier = (
   return `${registrationScope}.${capabilityType}.${normalizeIdentifierSegment(sourceValue).slice(0, preservedLength)}-${hash}`;
 };
 
-const inferToolRiskLevel = (
-  annotations: McpListedTool["annotations"]
-): ToolDescriptor["riskLevel"] => {
-  if (annotations?.destructiveHint) {
-    return "destructive";
-  }
+const normalizeToolDescriptor = (
+  registration: RegisteredMcpServer,
+  tool: McpListedTool,
+  resolveRiskLevel: (input: ToolRiskClassificationInput) => ToolRiskLevel
+): ToolDescriptor => {
+  const id = createCapabilityIdentifier(registration, "tool", tool.name);
 
-  if (annotations?.readOnlyHint) {
-    return "read-only";
-  }
-
-  return "unknown";
+  return {
+    id,
+    serverId: registration.serverId,
+    ...(registration.source.type === "plugin"
+      ? { pluginId: registration.source.pluginId }
+      : {}),
+    name: tool.name,
+    ...((tool.title ?? tool.annotations?.title)
+      ? { title: tool.title ?? tool.annotations?.title }
+      : {}),
+    ...(tool.description ? { description: tool.description } : {}),
+    inputSchema: tool.inputSchema,
+    ...(tool.annotations ? { annotations: tool.annotations } : {}),
+    riskLevel: resolveRiskLevel({
+      id,
+      name: tool.name,
+      ...(tool.annotations ? { annotations: tool.annotations } : {})
+    })
+  };
 };
 
 const isAbortError = (error: unknown): boolean =>
@@ -345,25 +370,6 @@ const toPromptArgumentsSchema = (
     ...(requiredArguments.length > 0 ? { required: requiredArguments } : {})
   };
 };
-
-const normalizeToolDescriptor = (
-  registration: RegisteredMcpServer,
-  tool: McpListedTool
-): ToolDescriptor => ({
-  id: createCapabilityIdentifier(registration, "tool", tool.name),
-  serverId: registration.serverId,
-  ...(registration.source.type === "plugin"
-    ? { pluginId: registration.source.pluginId }
-    : {}),
-  name: tool.name,
-  ...((tool.title ?? tool.annotations?.title)
-    ? { title: tool.title ?? tool.annotations?.title }
-    : {}),
-  ...(tool.description ? { description: tool.description } : {}),
-  inputSchema: tool.inputSchema,
-  ...(tool.annotations ? { annotations: tool.annotations } : {}),
-  riskLevel: inferToolRiskLevel(tool.annotations)
-});
 
 const normalizeResourceDescriptor = (
   registration: RegisteredMcpServer,
@@ -604,6 +610,26 @@ export class McpGatewayService {
     });
 
     return prompts;
+  }
+
+  refreshToolRiskLevels(): void {
+    for (const [registrationId, catalog] of this.catalogs) {
+      const refreshedTools = catalog.tools.map((tool) => ({
+        ...tool,
+        riskLevel: this.resolveToolRiskLevel({
+          id: tool.id,
+          name: tool.name,
+          ...(tool.annotations ? { annotations: tool.annotations } : {})
+        })
+      }));
+
+      this.setCatalog(registrationId, {
+        ...catalog,
+        tools: refreshedTools
+      });
+    }
+
+    this.logger.debug("Refreshed MCP tool risk classifications.");
   }
 
   listUserRegistrations(): readonly McpServerRegistration[] {
@@ -1214,6 +1240,12 @@ export class McpGatewayService {
       message: error.message ?? "Invalid value.",
       keyword: error.keyword
     }));
+  }
+
+  private resolveToolRiskLevel(
+    input: ToolRiskClassificationInput
+  ): ToolRiskLevel {
+    return this.options.classifyToolRisk?.(input) ?? "unknown";
   }
 
   private setCatalog(
@@ -1848,7 +1880,11 @@ export class McpGatewayService {
     registration: RegisteredMcpServer,
     tool: McpListedTool
   ): ToolDescriptor {
-    const normalizedTool = normalizeToolDescriptor(registration, tool);
+    const normalizedTool = normalizeToolDescriptor(
+      registration,
+      tool,
+      (input) => this.resolveToolRiskLevel(input)
+    );
 
     try {
       return toolDescriptorSchema.parse(normalizedTool);

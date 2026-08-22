@@ -8,12 +8,33 @@ import { ApplicationDatabase } from "@engineering-os/database";
 import { createLogger } from "@engineering-os/logger";
 import {
   FileMcpUserRegistrationStore,
-  McpGatewayService
+  McpGatewayService,
+  type ToolRiskClassificationInput
 } from "@engineering-os/mcp-gateway";
 import {
   PluginRegistryService,
   SqlitePluginRegistryRepository
 } from "@engineering-os/plugin-registry";
+
+const classifyToolRiskForTests = (
+  input: ToolRiskClassificationInput
+): "read-only" | "write" | "destructive" | "privileged" | "unknown" => {
+  const normalized = input.name.trim().toLowerCase().replace(/[_-]+/g, " ");
+
+  if (input.annotations?.destructiveHint) {
+    return "destructive";
+  }
+
+  if (/\b(read|list|search|get|fetch|find|query)\b/.test(normalized)) {
+    return input.annotations?.readOnlyHint ? "read-only" : "read-only";
+  }
+
+  if (input.annotations?.readOnlyHint) {
+    return "unknown";
+  }
+
+  return "unknown";
+};
 
 describe("McpGatewayService", () => {
   const databases: ApplicationDatabase[] = [];
@@ -276,6 +297,7 @@ describe("McpGatewayService", () => {
     const gateway = new McpGatewayService({
       installedPlugins: pluginRegistry,
       logger: createLogger({ component: "mcp-gateway-test" }),
+      classifyToolRisk: (input) => classifyToolRiskForTests(input),
       ...(options.startupTimeoutMs
         ? { startupTimeoutMs: options.startupTimeoutMs }
         : {}),

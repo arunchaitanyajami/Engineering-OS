@@ -13,6 +13,7 @@ import {
 
 import {
   PermissionEngineService,
+  SqliteAuditRepository,
   SqlitePermissionGrantRepository
 } from "../src/index.js";
 
@@ -280,5 +281,108 @@ describe("PermissionEngineService", () => {
     ).toMatchObject({
       allowed: true
     });
+  });
+
+  it("consumes allow-once grants after successful tool execution audit flow", async () => {
+    const { installedPlugin, permissionEngine } = await createEngine([
+      {
+        scope: "tool.execute",
+        reason: "Executes MCP tools declared by the permission test plugin."
+      }
+    ]);
+
+    permissionEngine.grantPermissions({
+      pluginId: installedPlugin.pluginId,
+      grants: [{ scope: "tool.execute", decision: "allow-once" }]
+    });
+
+    expect(
+      permissionEngine.hasActiveGrant(installedPlugin.pluginId, "tool.execute")
+    ).toBe(true);
+
+    permissionEngine.consumeAllowOnceGrant(
+      installedPlugin.pluginId,
+      "tool.execute"
+    );
+
+    expect(
+      permissionEngine.hasActiveGrant(installedPlugin.pluginId, "tool.execute")
+    ).toBe(false);
+  });
+
+  it("records audit events for permission grants", async () => {
+    const database = new ApplicationDatabase(":memory:");
+    database.runMigrations();
+    databases.push(database);
+
+    const fixturesDirectory = await mkdtemp(
+      join(tmpdir(), "engineering-os-permission-audit-")
+    );
+    directories.push(fixturesDirectory);
+
+    const pluginRegistry = new PluginRegistryService({
+      repository: new SqlitePluginRegistryRepository(database),
+      logger: createLogger({ component: "permission-engine-test" }),
+      engineeringOsVersion: "0.1.0",
+      installationsRootPath: join(fixturesDirectory, "managed-plugins")
+    });
+
+    const packageDirectory = await mkdtemp(
+      join(fixturesDirectory, "plugin-package-")
+    );
+    const manifest = {
+      schemaVersion: "1",
+      id: "com.engineering-os.permission-audit",
+      name: "Permission Audit Plugin",
+      version: "0.1.0",
+      description: "Plugin package for permission audit tests.",
+      publisher: { name: "Engineering OS" },
+      engines: { engineeringOs: ">=0.1.0" },
+      entrypoints: { backend: "./dist/backend/index.js" },
+      capabilities: ["mcp-server"],
+      permissions: [
+        {
+          scope: "tool.execute",
+          reason: "Executes MCP tools declared by the permission audit plugin."
+        }
+      ],
+      mcp: []
+    };
+
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(join(packageDirectory, "dist/backend"), { recursive: true });
+    await writeFile(
+      join(packageDirectory, "engineering-os.plugin.json"),
+      JSON.stringify(manifest, null, 2),
+      "utf8"
+    );
+    await writeFile(
+      join(packageDirectory, "dist/backend/index.js"),
+      `export default { manifest: ${JSON.stringify(manifest)}, async initialize(){}, async activate(){}, async deactivate(){}, async dispose(){} };`,
+      "utf8"
+    );
+
+    const installedPlugin =
+      await pluginRegistry.registerLocalPluginPackage(packageDirectory);
+    const auditRepository = new SqliteAuditRepository(database);
+    const permissionEngine = new PermissionEngineService({
+      installedPlugins: pluginRegistry,
+      repository: new SqlitePermissionGrantRepository(database),
+      auditRepository,
+      logger: createLogger({ component: "permission-engine-test" })
+    });
+
+    permissionEngine.grantPermissions({
+      pluginId: installedPlugin.pluginId,
+      grants: [{ scope: "tool.execute", decision: "always-allow" }]
+    });
+
+    expect(auditRepository.listRecent(1)).toMatchObject([
+      {
+        action: "permission.granted",
+        resourceId: installedPlugin.pluginId,
+        outcome: "success"
+      }
+    ]);
   });
 });

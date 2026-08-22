@@ -1,4 +1,4 @@
-import type { PluginPermissionRequest } from "@engineering-os/contracts";
+import type { PluginManifest, PluginPermissionRequest, PermissionScope } from "@engineering-os/contracts";
 import {
   grantPluginPermissionsRequestSchema,
   pluginPermissionGrantInputSchema,
@@ -26,6 +26,7 @@ import {
   toPermissionRequirement
 } from "./constraints.js";
 import { PermissionEngineError } from "./errors.js";
+import type { AuditRecordInput, AuditRepository } from "./audit-repository.js";
 import type { PermissionGrantRepository } from "./repository.js";
 
 export interface InstalledPluginCatalog {
@@ -35,6 +36,7 @@ export interface InstalledPluginCatalog {
 export interface PermissionEngineOptions {
   readonly installedPlugins: InstalledPluginCatalog;
   readonly repository: PermissionGrantRepository;
+  readonly auditRepository?: AuditRepository;
   readonly logger: Logger;
 }
 
@@ -43,7 +45,7 @@ const ENABLEMENT_GRANT_DECISIONS = new Set<PermissionGrantDecision>([
   "allow-for-session"
 ]);
 
-const isGrantActive = (
+const isGrantActiveForEnablement = (
   grant: PersistedPluginPermissionGrant,
   sessionId: string | undefined
 ): boolean => {
@@ -51,11 +53,7 @@ const isGrantActive = (
     return false;
   }
 
-  if (grant.decision === "deny") {
-    return false;
-  }
-
-  if (grant.decision === "allow-once") {
+  if (grant.decision === "deny" || grant.decision === "allow-once") {
     return false;
   }
 
@@ -65,6 +63,39 @@ const isGrantActive = (
 
   return grant.decision === "always-allow";
 };
+
+const isGrantActiveForRuntime = (
+  grant: PersistedPluginPermissionGrant,
+  sessionId: string | undefined
+): boolean => {
+  if (grant.revokedAt || grant.decision === "deny") {
+    return false;
+  }
+
+  if (grant.decision === "allow-once") {
+    return true;
+  }
+
+  if (grant.decision === "allow-for-session") {
+    return typeof sessionId === "string" && sessionId.length > 0;
+  }
+
+  return grant.decision === "always-allow";
+};
+
+const isGrantActive = isGrantActiveForEnablement;
+
+const satisfiesRuntimeRequirement = (
+  requirement: PluginPermissionRequirement,
+  grants: readonly PersistedPluginPermissionGrant[],
+  sessionId: string | undefined
+): boolean =>
+  grants.some(
+    (grant) =>
+      grant.scope === requirement.scope &&
+      constraintsMatch(grant.constraint, requirement.constraint) &&
+      isGrantActiveForRuntime(grant, sessionId)
+  );
 
 const satisfiesRequirement = (
   requirement: PluginPermissionRequirement,
@@ -117,11 +148,17 @@ const approvalModeSatisfiesRequirement = (
 
 export class PermissionEngineService {
   private readonly logger: Logger;
+  private readonly auditRepository: AuditRepository | undefined;
 
   constructor(private readonly options: PermissionEngineOptions) {
     this.logger = options.logger.child({
       component: "permission-engine"
     });
+    this.auditRepository = options.auditRepository;
+  }
+
+  private recordAudit(input: AuditRecordInput): void {
+    this.auditRepository?.append(input);
   }
 
   getPermissionReview(
@@ -134,13 +171,17 @@ export class PermissionEngineService {
     const pendingRequirements = requirements.filter(
       (requirement) => !satisfiesRequirement(requirement, grants, sessionId)
     );
+    const activeGrants = grants.filter((grant) => !grant.revokedAt);
+    const upgradeReviewRequired =
+      pendingRequirements.length > 0 && activeGrants.length > 0;
 
     return pluginPermissionReviewSnapshotSchema.parse({
       pluginId,
       requirements,
       grants,
       pendingRequirements,
-      canEnable: pendingRequirements.length === 0
+      canEnable: pendingRequirements.length === 0,
+      upgradeReviewRequired
     });
   }
 
@@ -152,6 +193,19 @@ export class PermissionEngineService {
     for (const grant of parsedRequest.grants) {
       this.persistGrant(parsedRequest.pluginId, grant, grantedAt);
     }
+
+    this.recordAudit({
+      actorType: "user",
+      action: "permission.granted",
+      resourceType: "plugin",
+      resourceId: parsedRequest.pluginId,
+      outcome: "success",
+      correlationId: parsedRequest.pluginId,
+      metadata: {
+        grantCount: parsedRequest.grants.length,
+        scopes: parsedRequest.grants.map((grant) => grant.scope)
+      }
+    });
 
     this.logger.info("Updated plugin permission grants.", {
       pluginId: parsedRequest.pluginId,
@@ -181,6 +235,18 @@ export class PermissionEngineService {
     );
 
     if (revokedGrant) {
+      this.recordAudit({
+        actorType: "user",
+        action: "permission.revoked",
+        resourceType: "plugin",
+        resourceId: parsedRequest.pluginId,
+        outcome: "success",
+        correlationId: parsedRequest.pluginId,
+        metadata: {
+          scope: parsedRequest.scope
+        }
+      });
+
       this.logger.info("Revoked plugin permission grant.", {
         pluginId: parsedRequest.pluginId,
         scope: parsedRequest.scope
@@ -214,9 +280,220 @@ export class PermissionEngineService {
       .some(
         (grant) =>
           grant.scope === scope &&
-          isGrantActive(grant, sessionId) &&
+          isGrantActiveForRuntime(grant, sessionId) &&
           grant.decision !== "deny"
       );
+  }
+
+  checkPluginPermission(input: {
+    readonly pluginId: string;
+    readonly scope: PermissionScope;
+    readonly constraint?: Record<string, unknown>;
+    readonly sessionId?: string;
+  }): boolean {
+    const plugin = this.requireInstalledPlugin(input.pluginId);
+    const requirement = plugin.manifest.permissions
+      .map(toPermissionRequirement)
+      .find((candidate) => candidate.scope === input.scope);
+
+    if (!requirement) {
+      return false;
+    }
+
+    if (
+      input.constraint &&
+      !constraintsMatch(requirement.constraint, input.constraint)
+    ) {
+      return false;
+    }
+
+    return satisfiesRuntimeRequirement(
+      requirement,
+      this.options.repository.listByPluginId(input.pluginId),
+      input.sessionId
+    );
+  }
+
+  requestPluginPermission(input: {
+    readonly pluginId: string;
+    readonly scope: PermissionScope;
+    readonly reason: string;
+    readonly constraint?: Record<string, unknown>;
+    readonly sessionId?: string;
+  }): PermissionGrantDecision {
+    const plugin = this.requireInstalledPlugin(input.pluginId);
+    const manifestPermission = plugin.manifest.permissions.find(
+      (permission) => permission.scope === input.scope
+    );
+
+    if (!manifestPermission) {
+      this.recordAudit({
+        actorType: "plugin",
+        actorId: input.pluginId,
+        action: "permission.requested",
+        resourceType: "plugin.permission",
+        resourceId: input.scope,
+        outcome: "denied",
+        correlationId: input.pluginId,
+        metadata: {
+          reason: input.reason
+        }
+      });
+
+      return "deny";
+    }
+
+    const requirement = toPermissionRequirement(manifestPermission);
+
+    if (
+      input.constraint &&
+      !constraintsMatch(requirement.constraint, input.constraint)
+    ) {
+      return "deny";
+    }
+
+    const activeGrant = this.options.repository
+      .listByPluginId(input.pluginId)
+      .find(
+        (grant) =>
+          grant.scope === input.scope &&
+          constraintsMatch(grant.constraint, requirement.constraint) &&
+          isGrantActiveForRuntime(grant, input.sessionId)
+      );
+
+    if (activeGrant) {
+      return activeGrant.decision;
+    }
+
+    this.recordAudit({
+      actorType: "plugin",
+      actorId: input.pluginId,
+      action: "permission.requested",
+      resourceType: "plugin.permission",
+      resourceId: input.scope,
+      outcome: "denied",
+      correlationId: input.pluginId,
+      metadata: {
+        reason: input.reason
+      }
+    });
+
+    return "deny";
+  }
+
+  consumeAllowOnceGrant(
+    pluginId: string,
+    scope: PersistedPluginPermissionGrant["scope"]
+  ): void {
+    const activeGrant = this.options.repository
+      .listByPluginId(pluginId)
+      .find(
+        (grant) =>
+          grant.scope === scope &&
+          !grant.revokedAt &&
+          grant.decision === "allow-once"
+      );
+
+    if (!activeGrant) {
+      return;
+    }
+
+    this.options.repository.revokeGrant(
+      pluginId,
+      scope,
+      new Date().toISOString()
+    );
+
+    this.recordAudit({
+      actorType: "system",
+      action: "permission.consumed",
+      resourceType: "plugin.permission",
+      resourceId: scope,
+      outcome: "success",
+      correlationId: pluginId,
+      metadata: {
+        pluginId,
+        scope,
+        decision: "allow-once"
+      }
+    });
+  }
+
+  syncGrantsAfterUpgrade(
+    pluginId: string,
+    previousManifest: PluginManifest
+  ): readonly PersistedPluginPermissionGrant["scope"][] {
+    const plugin = this.requireInstalledPlugin(pluginId);
+    const nextRequirements = plugin.manifest.permissions.map(toPermissionRequirement);
+    const revokedScopes: PersistedPluginPermissionGrant["scope"][] = [];
+    const revokedAt = new Date().toISOString();
+
+    for (const grant of this.options.repository.listByPluginId(pluginId)) {
+      if (grant.revokedAt) {
+        continue;
+      }
+
+      const nextRequirement = nextRequirements.find(
+        (requirement) => requirement.scope === grant.scope
+      );
+
+      if (
+        !nextRequirement ||
+        !constraintsMatch(grant.constraint, nextRequirement.constraint)
+      ) {
+        this.options.repository.revokeGrant(pluginId, grant.scope, revokedAt);
+        revokedScopes.push(grant.scope);
+
+        this.recordAudit({
+          actorType: "system",
+          action: "permission.revoked",
+          resourceType: "plugin",
+          resourceId: pluginId,
+          outcome: "success",
+          correlationId: pluginId,
+          metadata: {
+            scope: grant.scope,
+            reason: "plugin-upgrade",
+            previousVersion: previousManifest.version,
+            nextVersion: plugin.manifest.version
+          }
+        });
+      }
+    }
+
+    if (revokedScopes.length > 0) {
+      this.logger.info("Revoked stale plugin permission grants after upgrade.", {
+        pluginId,
+        revokedScopes,
+        previousVersion: previousManifest.version,
+        nextVersion: plugin.manifest.version
+      });
+    }
+
+    return revokedScopes;
+  }
+
+  recordToolExecutionAudit(input: {
+    readonly tool: ToolDescriptor;
+    readonly executionContext: ExecutionContext;
+    readonly outcome: "success" | "failure" | "denied" | "cancelled";
+  }): void {
+    this.recordAudit({
+      actorType: input.executionContext.actor.type,
+      ...(input.executionContext.actor.id
+        ? { actorId: input.executionContext.actor.id }
+        : {}),
+      action: "tool.executed",
+      resourceType: "mcp.tool",
+      resourceId: input.tool.id,
+      outcome: input.outcome,
+      correlationId: input.executionContext.correlationId,
+      metadata: {
+        toolName: input.tool.name,
+        riskLevel: input.tool.riskLevel,
+        ...(input.tool.pluginId ? { pluginId: input.tool.pluginId } : {})
+      }
+    });
   }
 
   evaluateToolExecution(input: {
@@ -233,6 +510,12 @@ export class PermissionEngineService {
         input.executionContext.sessionId
       )
     ) {
+      this.recordToolExecutionAudit({
+        tool: input.tool,
+        executionContext: input.executionContext,
+        outcome: "denied"
+      });
+
       return toolExecutionPolicyEvaluationSchema.parse({
         allowed: false,
         requiredApproval,
@@ -247,6 +530,12 @@ export class PermissionEngineService {
         requiredApproval
       )
     ) {
+      this.recordToolExecutionAudit({
+        tool: input.tool,
+        executionContext: input.executionContext,
+        outcome: "denied"
+      });
+
       return toolExecutionPolicyEvaluationSchema.parse({
         allowed: false,
         requiredApproval,

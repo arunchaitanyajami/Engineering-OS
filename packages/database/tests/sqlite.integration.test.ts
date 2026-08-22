@@ -37,7 +37,7 @@ describe("ApplicationDatabase", () => {
     expect(database.listSessions()).toHaveLength(1);
     expect(database.getHealth()).toMatchObject({
       ok: true,
-      migrationVersion: 5
+      migrationVersion: 7
     });
   });
 

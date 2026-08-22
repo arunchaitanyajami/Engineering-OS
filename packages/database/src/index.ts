@@ -169,6 +169,58 @@ export const applicationMigrations: readonly SqlMigration[] = [
         ON plugin_permissions(plugin_id, scope)
         WHERE revoked_at IS NULL;
     `
+  },
+  {
+    version: 6,
+    name: "tool_policies",
+    sql: `
+      CREATE TABLE IF NOT EXISTS tool_policies (
+        id TEXT PRIMARY KEY,
+        tool_id TEXT NOT NULL UNIQUE,
+        risk_level TEXT NOT NULL CHECK (
+          risk_level IN (
+            'read-only',
+            'write',
+            'destructive',
+            'privileged',
+            'unknown'
+          )
+        ),
+        source TEXT NOT NULL CHECK (source IN ('manual', 'inferred')),
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_tool_policies_updated_at
+        ON tool_policies(updated_at DESC);
+    `
+  },
+  {
+    version: 7,
+    name: "audit_events",
+    sql: `
+      CREATE TABLE IF NOT EXISTS audit_events (
+        id TEXT PRIMARY KEY,
+        timestamp TEXT NOT NULL,
+        actor_type TEXT NOT NULL CHECK (
+          actor_type IN ('user', 'agent', 'workflow', 'plugin', 'system')
+        ),
+        actor_id TEXT,
+        action TEXT NOT NULL,
+        resource_type TEXT,
+        resource_id TEXT,
+        outcome TEXT NOT NULL CHECK (
+          outcome IN ('success', 'failure', 'denied', 'cancelled')
+        ),
+        correlation_id TEXT NOT NULL,
+        metadata_json TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp
+        ON audit_events(timestamp DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_audit_events_correlation_id
+        ON audit_events(correlation_id);
+    `
   }
 ];
 

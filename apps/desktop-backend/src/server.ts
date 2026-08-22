@@ -25,6 +25,7 @@ import {
   mcpToolExecutionControlRequestSchema,
   mcpServerRegistrationSchema,
   revokePluginPermissionRequestSchema,
+  setToolPolicyRequestSchema,
   toolExecutionRequestSchema
 } from "@engineering-os/contracts/unstable-runtime";
 import {
@@ -52,7 +53,10 @@ import {
 import {
   PermissionEngineError,
   PermissionEngineService,
-  SqlitePermissionGrantRepository
+  SqliteAuditRepository,
+  SqlitePermissionGrantRepository,
+  SqliteToolPolicyRepository,
+  ToolSafetyService
 } from "@engineering-os/permission-engine";
 import {
   ApplicationDatabase,
@@ -142,6 +146,7 @@ export interface BackendContext {
   readonly pluginRuntime: PluginRuntimeService;
   readonly pluginLifecycle: PluginLifecycleService;
   readonly permissionEngine: PermissionEngineService;
+  readonly toolSafety: ToolSafetyService;
   readonly logger: ReturnType<typeof createLogger>;
   flushLogs(): Promise<void>;
 }
@@ -818,20 +823,30 @@ export const createBackendContext = async (
   const mcpUserRegistrationStore = new FileMcpUserRegistrationStore(
     mcpUserRegistrationsFilePath
   );
+  const toolSafety = new ToolSafetyService({
+    repository: new SqliteToolPolicyRepository(database)
+  });
   const mcpGateway = new McpGatewayService({
     installedPlugins: pluginRegistry,
     logger,
-    userRegistrations: await mcpUserRegistrationStore.load()
-  });
-  const pluginRuntime = new PluginRuntimeService({
-    pluginResolver: pluginRegistry,
-    logger,
-    worker: await resolvePluginRuntimeWorkerOptions()
+    userRegistrations: await mcpUserRegistrationStore.load(),
+    classifyToolRisk: (input) => toolSafety.resolveRiskLevel(input)
   });
   const permissionEngine = new PermissionEngineService({
     installedPlugins: pluginRegistry,
     repository: new SqlitePermissionGrantRepository(database),
+    auditRepository: new SqliteAuditRepository(database),
     logger
+  });
+  const pluginRuntime = new PluginRuntimeService({
+    pluginResolver: pluginRegistry,
+    logger,
+    worker: await resolvePluginRuntimeWorkerOptions(),
+    permissionBroker: {
+      checkPermission: (input) => permissionEngine.checkPluginPermission(input),
+      requestPermission: (input) =>
+        permissionEngine.requestPluginPermission(input)
+    }
   });
   const pluginLifecycle = new PluginLifecycleService({
     pluginRegistry,
@@ -857,6 +872,7 @@ export const createBackendContext = async (
     pluginRuntime,
     pluginLifecycle,
     permissionEngine,
+    toolSafety,
     logger,
     flushLogs: () => fileLogTransport.flush()
   };
@@ -900,6 +916,26 @@ const assertToolExecutionAllowed = (
     evaluation.message ?? `Tool '${toolExecutionRequest.toolId}' was denied.`,
     evaluation.code === "MCP_TOOL_EXECUTION_APPROVAL_REQUIRED" ? 409 : 403
   );
+};
+
+const finalizeSuccessfulToolExecution = (
+  context: BackendContext,
+  toolExecutionRequest: z.infer<typeof toolExecutionRequestSchema>
+): void => {
+  const tool = resolveCatalogTool(context, toolExecutionRequest.toolId);
+
+  context.permissionEngine.recordToolExecutionAudit({
+    tool,
+    executionContext: toolExecutionRequest.executionContext,
+    outcome: "success"
+  });
+
+  if (tool.pluginId) {
+    context.permissionEngine.consumeAllowOnceGrant(
+      tool.pluginId,
+      "tool.execute"
+    );
+  }
 };
 
 export const createDesktopBackendHandler =
@@ -1051,6 +1087,8 @@ export const createDesktopBackendHandler =
         if (requestAbortSignal.aborted || response.destroyed) {
           return;
         }
+
+        finalizeSuccessfulToolExecution(context, parsedToolExecutionRequest);
 
         writeJson(response, {
           result
@@ -1207,6 +1245,80 @@ export const createDesktopBackendHandler =
           plugin:
             await context.pluginRegistry.registerLocalPluginPackage(packagePath)
         });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/plugins/upgrade-local"
+      ) {
+        const { packagePath } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          registerLocalPluginRequestSchema,
+          "PLUGIN_UPGRADE_REQUEST_INVALID",
+          "Plugin upgrade request is invalid."
+        );
+
+        validatePluginPackagePath(packagePath);
+        writeJson(response, {
+          ...(await context.pluginLifecycle.upgradePlugin(packagePath))
+        });
+        return;
+      }
+
+      if (request.method === "GET" && requestUrl.pathname === "/mcp/tool-policies") {
+        const toolId = requestUrl.searchParams.get("toolId")?.trim();
+
+        if (toolId) {
+          const tool = context.mcpGateway
+            .listTools()
+            .find((candidate) => candidate.id === toolId);
+
+          writeJson(response, {
+            policy: context.toolSafety.getPolicyReview({
+              id: toolId,
+              name: tool?.name ?? toolId,
+              ...(tool?.annotations ? { annotations: tool.annotations } : {})
+            })
+          });
+          return;
+        }
+
+        writeJson(response, {
+          policies: context.toolSafety.listManualPolicies()
+        });
+        return;
+      }
+
+      if (
+        request.method === "PUT" &&
+        requestUrl.pathname === "/mcp/tool-policies"
+      ) {
+        const setPolicyRequest = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          setToolPolicyRequestSchema,
+          "MCP_TOOL_POLICY_INVALID",
+          "MCP tool policy request is invalid."
+        );
+        const tool = context.mcpGateway
+          .listTools()
+          .find((candidate) => candidate.id === setPolicyRequest.toolId);
+        const policy = context.toolSafety.setManualPolicy(
+          setPolicyRequest.toolId,
+          setPolicyRequest.riskLevel,
+          tool
+            ? {
+                name: tool.name,
+                ...(tool.annotations ? { annotations: tool.annotations } : {})
+              }
+            : undefined
+        );
+
+        context.mcpGateway.refreshToolRiskLevels();
+
+        writeJson(response, { policy });
         return;
       }
 

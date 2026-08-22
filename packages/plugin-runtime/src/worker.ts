@@ -1,18 +1,25 @@
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
   pluginId,
   pluginManifestSchema,
+  type PermissionScope,
   type PluginManifest
 } from "@engineering-os/contracts";
 import {
+  checkPluginPermissionBrokerResponseSchema,
+  pluginRuntimeBrokerRequestSchema,
   pluginRuntimeHealthSnapshotSchema,
   pluginRuntimeRequestSchema,
   pluginRuntimeProtocolVersion,
+  requestPluginPermissionBrokerResponseSchema,
   rpcResponseSchema,
   type EngineeringOsPlugin,
   type EngineeringOsPluginContext,
+  type PermissionGrantDecision,
+  type PluginRuntimeBrokerRequest,
   type PluginRuntimeRequest,
   type PluginRuntimeStatus,
   type RpcError
@@ -38,10 +45,51 @@ const state: RuntimePluginState = {
   status: "stopped"
 };
 
+interface PendingBrokerResponse {
+  readonly resolve: (value: unknown) => void;
+  readonly reject: (error: unknown) => void;
+  readonly timeout: ReturnType<typeof setTimeout>;
+}
+
+const pendingBrokerResponses = new Map<string, PendingBrokerResponse>();
+
+const BROKER_REQUEST_TIMEOUT_MS = 5_000;
+
 const createUnsupportedMilestone23Error = (apiName: string) =>
   new Error(
     `${apiName} is not available in Milestone 2.3. Trusted local plugins run out of process, but process isolation is not a security sandbox yet.`
   );
+
+const sendBrokerRequest = async (
+  request: PluginRuntimeBrokerRequest
+): Promise<unknown> => {
+  if (!process.send) {
+    throw new Error("Plugin permission broker is unavailable in this runtime.");
+  }
+
+  return new Promise((resolve, reject) => {
+    const timeout = globalThis.setTimeout(() => {
+      pendingBrokerResponses.delete(request.requestId);
+      reject(new Error("Plugin permission broker request timed out."));
+    }, BROKER_REQUEST_TIMEOUT_MS);
+
+    pendingBrokerResponses.set(request.requestId, {
+      resolve,
+      reject,
+      timeout
+    });
+
+    process.send?.(request, (error) => {
+      if (!error) {
+        return;
+      }
+
+      clearTimeout(timeout);
+      pendingBrokerResponses.delete(request.requestId);
+      reject(error);
+    });
+  });
+};
 
 const createContext = (
   manifest: PluginManifest
@@ -137,15 +185,47 @@ const createContext = (
     }
   },
   permissions: {
-    async has() {
-      return Promise.reject(
-        createUnsupportedMilestone23Error("Plugin permission broker")
+    async has(scope: PermissionScope, constraint?: Record<string, unknown>) {
+      if (!state.pluginId) {
+        return false;
+      }
+
+      const response = await sendBrokerRequest(
+        pluginRuntimeBrokerRequestSchema.parse({
+          protocolVersion: pluginRuntimeProtocolVersion,
+          type: "broker-check-permission",
+          requestId: randomUUID(),
+          pluginId: state.pluginId,
+          scope,
+          ...(constraint ? { constraint } : {})
+        })
       );
+
+      return checkPluginPermissionBrokerResponseSchema.parse(response).granted;
     },
-    async request() {
-      return Promise.reject(
-        createUnsupportedMilestone23Error("Plugin permission broker")
+    async request(
+      scope: PermissionScope,
+      reason: string,
+      constraint?: Record<string, unknown>
+    ): Promise<PermissionGrantDecision> {
+      if (!state.pluginId) {
+        return "deny";
+      }
+
+      const response = await sendBrokerRequest(
+        pluginRuntimeBrokerRequestSchema.parse({
+          protocolVersion: pluginRuntimeProtocolVersion,
+          type: "broker-request-permission",
+          requestId: randomUUID(),
+          pluginId: state.pluginId,
+          scope,
+          reason,
+          ...(constraint ? { constraint } : {})
+        })
       );
+
+      return requestPluginPermissionBrokerResponseSchema.parse(response)
+        .decision;
     }
   },
   events: {
@@ -401,6 +481,30 @@ const handleShutdownSignal = async (signal: string) => {
 
 export const runPluginRuntimeWorker = () => {
   process.on("message", (message) => {
+    const parsedResponse = rpcResponseSchema.safeParse(message);
+
+    if (parsedResponse.success) {
+      const pending = pendingBrokerResponses.get(parsedResponse.data.requestId);
+
+      if (pending) {
+        clearTimeout(pending.timeout);
+        pendingBrokerResponses.delete(parsedResponse.data.requestId);
+
+        if (!parsedResponse.data.success) {
+          pending.reject(
+            new Error(
+              parsedResponse.data.error?.message ??
+                "Plugin permission broker request failed."
+            )
+          );
+          return;
+        }
+
+        pending.resolve(parsedResponse.data.data);
+        return;
+      }
+    }
+
     const parsedRequest = pluginRuntimeRequestSchema.safeParse(message);
 
     if (!parsedRequest.success) {

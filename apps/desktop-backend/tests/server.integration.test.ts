@@ -448,7 +448,7 @@ describe("desktop backend server", () => {
       database: {
         ok: true,
         status: "ready",
-        migrationVersion: 5,
+        migrationVersion: 7,
         databasePath: runtime.context.databaseFilePath
       },
       configFilePath: runtime.context.configFilePath,
@@ -737,7 +737,7 @@ describe("desktop backend server", () => {
 
     expect(context.database.getHealth()).toMatchObject({
       ok: true,
-      migrationVersion: 5,
+      migrationVersion: 7,
       databasePath: context.databaseFilePath
     });
 
@@ -2451,6 +2451,99 @@ describe("desktop backend server", () => {
         pluginId: "com.engineering-os.permission-gate",
         enabled: true
       }
+    });
+  });
+
+  it("supports manual MCP tool safety policy overrides", async () => {
+    runtime = await startRuntime();
+    const packageDirectory = await createLocalPluginPackage(appDataDirectory, {
+      pluginId: "com.engineering-os.tool-policy",
+      mcp: [
+        {
+          id: "filesystem",
+          transport: "stdio",
+          command: "node",
+          args: ["./index.js"],
+          cwd: "./servers/filesystem"
+        }
+      ]
+    });
+
+    await fetch(`${runtime.baseUrl}/plugins/register-local`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({ packagePath: packageDirectory })
+    });
+    await grantAllPluginPermissions("com.engineering-os.tool-policy");
+    await fetch(`${runtime.baseUrl}/plugins/enable`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        pluginId: "com.engineering-os.tool-policy"
+      })
+    });
+    await fetch(`${runtime.baseUrl}/mcp/servers/start`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        registrationId: "com.engineering-os.tool-policy:filesystem"
+      })
+    });
+
+    const toolsResponse = await fetch(`${runtime.baseUrl}/mcp/tools`, {
+      headers: authenticatedHeaders()
+    });
+    const toolsPayload = (await toolsResponse.json()) as {
+      tools: Array<{ id: string; riskLevel: string }>;
+    };
+    const readWorkspaceTool = toolsPayload.tools.find(
+      (tool) => tool.id.endsWith(".tool.read_workspace")
+    );
+
+    expect(readWorkspaceTool?.riskLevel).toBe("read-only");
+
+    const toolId = readWorkspaceTool?.id;
+    expect(toolId).toBeTruthy();
+
+    const overrideResponse = await fetch(`${runtime.baseUrl}/mcp/tool-policies`, {
+      method: "PUT",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        toolId,
+        riskLevel: "privileged"
+      })
+    });
+
+    expect(overrideResponse.status).toBe(200);
+    await expect(overrideResponse.json()).resolves.toMatchObject({
+      policy: {
+        toolId,
+        effectiveRiskLevel: "privileged",
+        source: "manual",
+        inferredRiskLevel: "read-only"
+      }
+    });
+
+    const refreshedToolsResponse = await fetch(`${runtime.baseUrl}/mcp/tools`, {
+      headers: authenticatedHeaders()
+    });
+
+    expect(refreshedToolsResponse.status).toBe(200);
+    await expect(refreshedToolsResponse.json()).resolves.toMatchObject({
+      tools: [
+        {
+          id: toolId,
+          riskLevel: "privileged"
+        }
+      ]
     });
   });
 });

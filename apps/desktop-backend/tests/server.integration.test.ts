@@ -375,6 +375,54 @@ describe("desktop backend server", () => {
     ...additionalHeaders
   });
 
+  const grantAllPluginPermissions = async (pluginId: string) => {
+    if (!runtime) {
+      throw new Error("Runtime must be started before granting permissions.");
+    }
+
+    const reviewResponse = await fetch(
+      `${runtime.baseUrl}/plugins/permissions/review?pluginId=${encodeURIComponent(pluginId)}`,
+      {
+        headers: authenticatedHeaders()
+      }
+    );
+    expect(reviewResponse.status).toBe(200);
+    const reviewBody = (await reviewResponse.json()) as {
+      review: {
+        pendingRequirements: readonly {
+          scope: string;
+          constraint?: Record<string, unknown>;
+        }[];
+      };
+    };
+
+    if (reviewBody.review.pendingRequirements.length === 0) {
+      return;
+    }
+
+    const grantResponse = await fetch(
+      `${runtime.baseUrl}/plugins/permissions/grant`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({
+          pluginId,
+          grants: reviewBody.review.pendingRequirements.map((requirement) => ({
+            scope: requirement.scope,
+            decision: "always-allow",
+            ...(requirement.constraint
+              ? { constraint: requirement.constraint }
+              : {})
+          }))
+        })
+      }
+    );
+
+    expect(grantResponse.status).toBe(200);
+  };
+
   beforeEach(async () => {
     appDataDirectory = await mkdtemp(join(tmpdir(), "engineering-os-backend-"));
   });
@@ -400,7 +448,7 @@ describe("desktop backend server", () => {
       database: {
         ok: true,
         status: "ready",
-        migrationVersion: 4,
+        migrationVersion: 5,
         databasePath: runtime.context.databaseFilePath
       },
       configFilePath: runtime.context.configFilePath,
@@ -689,7 +737,7 @@ describe("desktop backend server", () => {
 
     expect(context.database.getHealth()).toMatchObject({
       ok: true,
-      migrationVersion: 4,
+      migrationVersion: 5,
       databasePath: context.databaseFilePath
     });
 
@@ -858,6 +906,7 @@ describe("desktop backend server", () => {
       ]
     });
 
+    await grantAllPluginPermissions("com.engineering-os.mcp-test");
     await fetch(`${runtime.baseUrl}/plugins/enable`, {
       method: "POST",
       headers: authenticatedHeaders({
@@ -1035,6 +1084,7 @@ describe("desktop backend server", () => {
       }),
       body: JSON.stringify({ packagePath: packageDirectory })
     });
+    await grantAllPluginPermissions("com.engineering-os.mcp-runtime");
     await fetch(`${runtime.baseUrl}/plugins/enable`, {
       method: "POST",
       headers: authenticatedHeaders({
@@ -2338,6 +2388,68 @@ describe("desktop backend server", () => {
       plugin: {
         pluginId: "com.engineering-os.runtime-test",
         enabled: false
+      }
+    });
+  });
+
+  it("requires permission grants before enabling MCP plugins", async () => {
+    runtime = await startRuntime();
+    const packageDirectory = await createLocalPluginPackage(appDataDirectory, {
+      pluginId: "com.engineering-os.permission-gate",
+      mcp: [
+        {
+          id: "filesystem",
+          transport: "stdio",
+          command: "node",
+          args: ["./index.js"],
+          cwd: "./servers/filesystem"
+        }
+      ]
+    });
+
+    await fetch(`${runtime.baseUrl}/plugins/register-local`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({ packagePath: packageDirectory })
+    });
+
+    const blockedEnableResponse = await fetch(
+      `${runtime.baseUrl}/plugins/enable`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({
+          pluginId: "com.engineering-os.permission-gate"
+        })
+      }
+    );
+
+    expect(blockedEnableResponse.status).toBe(409);
+    await expect(blockedEnableResponse.json()).resolves.toMatchObject({
+      code: "PLUGIN_PERMISSIONS_PENDING"
+    });
+
+    await grantAllPluginPermissions("com.engineering-os.permission-gate");
+
+    const enableResponse = await fetch(`${runtime.baseUrl}/plugins/enable`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        pluginId: "com.engineering-os.permission-gate"
+      })
+    });
+
+    expect(enableResponse.status).toBe(200);
+    await expect(enableResponse.json()).resolves.toMatchObject({
+      plugin: {
+        pluginId: "com.engineering-os.permission-gate",
+        enabled: true
       }
     });
   });

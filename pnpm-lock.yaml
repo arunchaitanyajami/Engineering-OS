@@ -122,6 +122,9 @@ importers:
       '@engineering-os/mcp-gateway':
         specifier: workspace:*
         version: link:../../packages/mcp-gateway
+      '@engineering-os/permission-engine':
+        specifier: workspace:*
+        version: link:../../packages/permission-engine
       '@engineering-os/platform':
         specifier: workspace:*
         version: link:../../packages/platform
@@ -210,6 +213,21 @@ importers:
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
+
+  packages/permission-engine:
+    dependencies:
+      '@engineering-os/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@engineering-os/database':
+        specifier: workspace:*
+        version: link:../database
+      '@engineering-os/logger':
+        specifier: workspace:*
+        version: link:../logger
+      '@engineering-os/plugin-registry':
+        specifier: workspace:*
+        version: link:../plugin-registry
 
   packages/platform: {}
 

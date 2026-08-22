@@ -3,6 +3,7 @@ import type {
   PluginRuntimeHealthSnapshot
 } from "@engineering-os/contracts/unstable-runtime";
 import { McpGatewayError, McpGatewayService } from "@engineering-os/mcp-gateway";
+import { PermissionEngineService } from "@engineering-os/permission-engine";
 import type { InstalledPlugin } from "@engineering-os/plugin-registry";
 import {
   PluginRegistryError,
@@ -14,6 +15,11 @@ export interface PluginLifecycleServiceOptions {
   readonly pluginRegistry: PluginRegistryService;
   readonly pluginRuntime: PluginRuntimeService;
   readonly mcpGateway: McpGatewayService;
+  readonly permissionEngine: PermissionEngineService;
+}
+
+export interface PluginEnableOptions {
+  readonly sessionId?: string;
 }
 
 export class PluginLifecycleService {
@@ -21,10 +27,17 @@ export class PluginLifecycleService {
 
   constructor(private readonly options: PluginLifecycleServiceOptions) {}
 
-  enablePlugin(pluginId: string): Promise<InstalledPlugin> {
-    return this.runWithLifecycleLock(pluginId, async () =>
-      this.options.pluginRegistry.enableInstalledPlugin(pluginId)
-    );
+  enablePlugin(
+    pluginId: string,
+    options: PluginEnableOptions = {}
+  ): Promise<InstalledPlugin> {
+    return this.runWithLifecycleLock(pluginId, async () => {
+      this.options.permissionEngine.assertCanEnablePlugin(
+        pluginId,
+        options.sessionId
+      );
+      return this.options.pluginRegistry.enableInstalledPlugin(pluginId);
+    });
   }
 
   async disablePlugin(pluginId: string): Promise<InstalledPlugin> {

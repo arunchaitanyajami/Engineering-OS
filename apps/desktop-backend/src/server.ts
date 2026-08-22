@@ -21,8 +21,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { semanticVersionSchema } from "@engineering-os/contracts";
 import {
+  grantPluginPermissionsRequestSchema,
   mcpToolExecutionControlRequestSchema,
   mcpServerRegistrationSchema,
+  revokePluginPermissionRequestSchema,
   toolExecutionRequestSchema
 } from "@engineering-os/contracts/unstable-runtime";
 import {
@@ -47,6 +49,11 @@ import {
   PluginRegistryService,
   SqlitePluginRegistryRepository
 } from "@engineering-os/plugin-registry";
+import {
+  PermissionEngineError,
+  PermissionEngineService,
+  SqlitePermissionGrantRepository
+} from "@engineering-os/permission-engine";
 import {
   ApplicationDatabase,
   type ApplicationDatabaseHealth
@@ -101,6 +108,13 @@ const pluginRuntimeControlRequestSchema = z
   })
   .strict();
 
+const pluginEnableRequestSchema = z
+  .object({
+    pluginId: z.string().trim().min(1).max(256),
+    sessionId: z.string().trim().min(1).optional()
+  })
+  .strict();
+
 const mcpServerControlRequestSchema = z
   .object({
     registrationId: z.string().trim().min(1).max(512)
@@ -127,6 +141,7 @@ export interface BackendContext {
   readonly pluginRegistry: PluginRegistryService;
   readonly pluginRuntime: PluginRuntimeService;
   readonly pluginLifecycle: PluginLifecycleService;
+  readonly permissionEngine: PermissionEngineService;
   readonly logger: ReturnType<typeof createLogger>;
   flushLogs(): Promise<void>;
 }
@@ -311,6 +326,10 @@ const asPublicError = (
           cause: error.cause ?? error
         })
       : error instanceof PluginRuntimeError
+        ? new BackendPublicError(error.code, error.message, error.statusCode, {
+            cause: error.cause ?? error
+          })
+      : error instanceof PermissionEngineError
         ? new BackendPublicError(error.code, error.message, error.statusCode, {
             cause: error.cause ?? error
           })
@@ -809,10 +828,16 @@ export const createBackendContext = async (
     logger,
     worker: await resolvePluginRuntimeWorkerOptions()
   });
+  const permissionEngine = new PermissionEngineService({
+    installedPlugins: pluginRegistry,
+    repository: new SqlitePermissionGrantRepository(database),
+    logger
+  });
   const pluginLifecycle = new PluginLifecycleService({
     pluginRegistry,
     pluginRuntime,
-    mcpGateway
+    mcpGateway,
+    permissionEngine
   });
   database.runMigrations();
   database.setMetadata("database_status", "ready");
@@ -831,9 +856,50 @@ export const createBackendContext = async (
     pluginRegistry,
     pluginRuntime,
     pluginLifecycle,
+    permissionEngine,
     logger,
     flushLogs: () => fileLogTransport.flush()
   };
+};
+
+const resolveCatalogTool = (
+  context: BackendContext,
+  toolId: string
+) => {
+  const tool = context.mcpGateway.getCatalog().tools.find(
+    (candidate) => candidate.id === toolId
+  );
+
+  if (!tool) {
+    throw new BackendPublicError(
+      "MCP_GATEWAY_TOOL_NOT_FOUND",
+      `Tool '${toolId}' is not registered.`,
+      404
+    );
+  }
+
+  return tool;
+};
+
+const assertToolExecutionAllowed = (
+  context: BackendContext,
+  toolExecutionRequest: z.infer<typeof toolExecutionRequestSchema>
+): void => {
+  const tool = resolveCatalogTool(context, toolExecutionRequest.toolId);
+  const evaluation = context.permissionEngine.evaluateToolExecution({
+    tool,
+    executionContext: toolExecutionRequest.executionContext
+  });
+
+  if (evaluation.allowed) {
+    return;
+  }
+
+  throw new BackendPublicError(
+    evaluation.code ?? "MCP_TOOL_EXECUTION_DENIED",
+    evaluation.message ?? `Tool '${toolExecutionRequest.toolId}' was denied.`,
+    evaluation.code === "MCP_TOOL_EXECUTION_APPROVAL_REQUIRED" ? 409 : 403
+  );
 };
 
 export const createDesktopBackendHandler =
@@ -969,10 +1035,14 @@ export const createDesktopBackendHandler =
           "MCP_GATEWAY_REQUEST_INVALID",
           "MCP gateway request is invalid."
         );
+        const parsedToolExecutionRequest =
+          toolExecutionRequestSchema.parse(toolExecutionRequest);
+
+        assertToolExecutionAllowed(context, parsedToolExecutionRequest);
 
         const requestAbortSignal = createRequestAbortSignal(request, response);
         const result = await context.mcpGateway.executeTool(
-          toolExecutionRequestSchema.parse(toolExecutionRequest),
+          parsedToolExecutionRequest,
           {
             signal: requestAbortSignal
           }
@@ -999,10 +1069,14 @@ export const createDesktopBackendHandler =
           "MCP_GATEWAY_REQUEST_INVALID",
           "MCP gateway request is invalid."
         );
+        const parsedToolExecutionRequest =
+          toolExecutionRequestSchema.parse(toolExecutionRequest);
+
+        assertToolExecutionAllowed(context, parsedToolExecutionRequest);
 
         writeJson(response, {
           execution: context.mcpGateway.startToolExecution(
-            toolExecutionRequestSchema.parse(toolExecutionRequest)
+            parsedToolExecutionRequest
           )
         });
         return;
@@ -1137,19 +1211,84 @@ export const createDesktopBackendHandler =
       }
 
       if (
+        request.method === "GET" &&
+        requestUrl.pathname === "/plugins/permissions/review"
+      ) {
+        const pluginId = requestUrl.searchParams.get("pluginId")?.trim();
+        const sessionId = requestUrl.searchParams.get("sessionId")?.trim();
+
+        if (!pluginId) {
+          throw new BackendPublicError(
+            "PLUGIN_PERMISSION_REVIEW_INVALID",
+            "Plugin permission review requires a pluginId query parameter.",
+            400
+          );
+        }
+
+        writeJson(response, {
+          review: context.permissionEngine.getPermissionReview(
+            pluginId,
+            sessionId
+          )
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/plugins/permissions/grant"
+      ) {
+        const grantRequest = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          grantPluginPermissionsRequestSchema,
+          "PLUGIN_PERMISSION_GRANT_INVALID",
+          "Plugin permission grant request is invalid."
+        );
+
+        writeJson(response, {
+          review: context.permissionEngine.grantPermissions(grantRequest)
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/plugins/permissions/revoke"
+      ) {
+        const revokeRequest = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          revokePluginPermissionRequestSchema,
+          "PLUGIN_PERMISSION_REVOKE_INVALID",
+          "Plugin permission revoke request is invalid."
+        );
+
+        writeJson(response, {
+          review: context.permissionEngine.revokePermission(
+            revokeRequest.pluginId,
+            revokeRequest.scope
+          )
+        });
+        return;
+      }
+
+      if (
         request.method === "POST" &&
         requestUrl.pathname === "/plugins/enable"
       ) {
-        const { pluginId } = await readValidatedJsonBody(
+        const { pluginId, sessionId } = await readValidatedJsonBody(
           request,
           MAX_JSON_PAYLOAD_BYTES,
-          pluginRuntimeControlRequestSchema,
+          pluginEnableRequestSchema,
           "PLUGIN_ENABLE_REQUEST_INVALID",
           "Plugin enable request is invalid."
         );
 
         writeJson(response, {
-          plugin: await context.pluginLifecycle.enablePlugin(pluginId)
+          plugin: await context.pluginLifecycle.enablePlugin(pluginId, {
+            ...(sessionId ? { sessionId } : {})
+          })
         });
         return;
       }

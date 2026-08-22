@@ -144,6 +144,31 @@ export const applicationMigrations: readonly SqlMigration[] = [
       CREATE INDEX IF NOT EXISTS idx_installed_plugins_updated_at
         ON installed_plugins(updated_at DESC);
     `
+  },
+  {
+    version: 5,
+    name: "plugin_permissions",
+    sql: `
+      CREATE TABLE IF NOT EXISTS plugin_permissions (
+        id TEXT PRIMARY KEY,
+        plugin_id TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        constraint_json TEXT,
+        decision TEXT NOT NULL CHECK (
+          decision IN ('deny', 'allow-once', 'allow-for-session', 'always-allow')
+        ),
+        granted_at TEXT NOT NULL,
+        revoked_at TEXT,
+        FOREIGN KEY (plugin_id) REFERENCES installed_plugins(plugin_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_plugin_permissions_plugin_id
+        ON plugin_permissions(plugin_id);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_plugin_permissions_active_scope
+        ON plugin_permissions(plugin_id, scope)
+        WHERE revoked_at IS NULL;
+    `
   }
 ];
 

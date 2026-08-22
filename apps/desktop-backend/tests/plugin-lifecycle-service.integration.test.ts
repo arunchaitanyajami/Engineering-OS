@@ -18,6 +18,11 @@ import {
   type PluginRuntimeServiceOptions
 } from "@engineering-os/plugin-runtime";
 
+import {
+  PermissionEngineService,
+  SqlitePermissionGrantRepository
+} from "@engineering-os/permission-engine";
+
 import { PluginLifecycleService } from "../src/plugin-lifecycle-service.js";
 
 const projectRootPath = fileURLToPath(new URL("../../..", import.meta.url));
@@ -281,18 +286,44 @@ describe("PluginLifecycleService", () => {
       startupTimeoutMs: 200,
       startupStabilityPeriodMs: 50
     });
+    const permissionEngine = new PermissionEngineService({
+      installedPlugins: pluginRegistry,
+      repository: new SqlitePermissionGrantRepository(database),
+      logger: createLogger({ component: "plugin-lifecycle-test" })
+    });
     const pluginLifecycle = new PluginLifecycleService({
       pluginRegistry,
       pluginRuntime,
-      mcpGateway
+      mcpGateway,
+      permissionEngine
     });
+
+    const grantAllPermissions = (pluginId: string) => {
+      const review = permissionEngine.getPermissionReview(pluginId);
+
+      if (review.pendingRequirements.length === 0) {
+        return;
+      }
+
+      permissionEngine.grantPermissions({
+        pluginId,
+        grants: review.pendingRequirements.map((requirement) => ({
+          scope: requirement.scope,
+          decision: "always-allow" as const,
+          ...(requirement.constraint
+            ? { constraint: requirement.constraint }
+            : {})
+        }))
+      });
+    };
 
     return {
       fixturesDirectory,
       mcpGateway,
       pluginRegistry,
       pluginRuntime,
-      pluginLifecycle
+      pluginLifecycle,
+      grantAllPermissions
     };
   };
 
@@ -305,7 +336,8 @@ describe("PluginLifecycleService", () => {
       fixturesDirectory,
       pluginRegistry,
       pluginRuntime,
-      pluginLifecycle
+      pluginLifecycle,
+      grantAllPermissions
     } = await createServices({
       onBeforeRuntimeSpawn: async () => {
         await startGate;
@@ -351,7 +383,8 @@ describe("PluginLifecycleService", () => {
       fixturesDirectory,
       pluginRegistry,
       pluginRuntime,
-      pluginLifecycle
+      pluginLifecycle,
+      grantAllPermissions
     } = await createServices({
       restartBackoffMs: 250
     });
@@ -432,8 +465,13 @@ describe("PluginLifecycleService", () => {
   });
 
   it("keeps plugin-owned MCP disable and start atomic under concurrent requests", async () => {
-    const { fixturesDirectory, mcpGateway, pluginRegistry, pluginLifecycle } =
-      await createServices();
+    const {
+      fixturesDirectory,
+      mcpGateway,
+      pluginRegistry,
+      pluginLifecycle,
+      grantAllPermissions
+    } = await createServices();
     const packageDirectory = await createRuntimePluginPackage(
       fixturesDirectory,
       {
@@ -449,6 +487,7 @@ describe("PluginLifecycleService", () => {
     const installedPlugin =
       await pluginRegistry.registerLocalPluginPackage(packageDirectory);
 
+    grantAllPermissions(installedPlugin.pluginId);
     await pluginLifecycle.enablePlugin(installedPlugin.pluginId);
 
     const registrationId = `${installedPlugin.pluginId}:filesystem`;
@@ -470,8 +509,13 @@ describe("PluginLifecycleService", () => {
   });
 
   it("releases the plugin lifecycle lock when plugin-owned MCP discovery times out", async () => {
-    const { fixturesDirectory, mcpGateway, pluginRegistry, pluginLifecycle } =
-      await createServices();
+    const {
+      fixturesDirectory,
+      mcpGateway,
+      pluginRegistry,
+      pluginLifecycle,
+      grantAllPermissions
+    } = await createServices();
     const packageDirectory = await createRuntimePluginPackage(
       fixturesDirectory,
       {
@@ -550,6 +594,7 @@ describe("PluginLifecycleService", () => {
     const installedPlugin =
       await pluginRegistry.registerLocalPluginPackage(packageDirectory);
 
+    grantAllPermissions(installedPlugin.pluginId);
     await pluginLifecycle.enablePlugin(installedPlugin.pluginId);
 
     const registrationId = `${installedPlugin.pluginId}:filesystem`;

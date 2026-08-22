@@ -714,6 +714,111 @@ export const auditEventSchema = z
 
 export type AuditEvent = z.infer<typeof auditEventSchema>;
 
+export const persistedPluginPermissionGrantSchema = permissionGrantSchema
+  .extend({
+    id: z.string().uuid()
+  })
+  .strict();
+
+export type PersistedPluginPermissionGrant = z.infer<
+  typeof persistedPluginPermissionGrantSchema
+>;
+
+export const pluginPermissionRequirementSchema = z
+  .object({
+    scope: permissionScopeSchema,
+    reason: z.string().min(10).max(500),
+    constraint: jsonObjectSchema.optional()
+  })
+  .strict();
+
+export type PluginPermissionRequirement = z.infer<
+  typeof pluginPermissionRequirementSchema
+>;
+
+export const pluginPermissionReviewSnapshotSchema = z
+  .object({
+    pluginId: pluginIdSchema,
+    requirements: z.array(pluginPermissionRequirementSchema),
+    grants: z.array(persistedPluginPermissionGrantSchema),
+    pendingRequirements: z.array(pluginPermissionRequirementSchema),
+    canEnable: z.boolean()
+  })
+  .strict();
+
+export type PluginPermissionReviewSnapshot = z.infer<
+  typeof pluginPermissionReviewSnapshotSchema
+>;
+
+export const pluginPermissionGrantInputSchema = z
+  .object({
+    scope: permissionScopeSchema,
+    decision: permissionGrantDecisionSchema,
+    constraint: jsonObjectSchema.optional()
+  })
+  .strict();
+
+export type PluginPermissionGrantInput = z.infer<
+  typeof pluginPermissionGrantInputSchema
+>;
+
+export const grantPluginPermissionsRequestSchema = z
+  .object({
+    pluginId: pluginIdSchema,
+    sessionId: z.string().min(1).optional(),
+    grants: z.array(pluginPermissionGrantInputSchema).min(1)
+  })
+  .strict();
+
+export type GrantPluginPermissionsRequest = z.infer<
+  typeof grantPluginPermissionsRequestSchema
+>;
+
+export const revokePluginPermissionRequestSchema = z
+  .object({
+    pluginId: pluginIdSchema,
+    scope: permissionScopeSchema
+  })
+  .strict();
+
+export type RevokePluginPermissionRequest = z.infer<
+  typeof revokePluginPermissionRequestSchema
+>;
+
+export const pluginPermissionReviewRequestSchema = z
+  .object({
+    pluginId: pluginIdSchema,
+    sessionId: z.string().min(1).optional()
+  })
+  .strict();
+
+export type PluginPermissionReviewRequest = z.infer<
+  typeof pluginPermissionReviewRequestSchema
+>;
+
+export const toolExecutionApprovalRequirementSchema = z.enum([
+  "none",
+  "user-confirmation",
+  "dual-confirmation"
+]);
+
+export type ToolExecutionApprovalRequirement = z.infer<
+  typeof toolExecutionApprovalRequirementSchema
+>;
+
+export const toolExecutionPolicyEvaluationSchema = z
+  .object({
+    allowed: z.boolean(),
+    requiredApproval: toolExecutionApprovalRequirementSchema,
+    code: z.string().min(1).optional(),
+    message: z.string().min(1).optional()
+  })
+  .strict();
+
+export type ToolExecutionPolicyEvaluation = z.infer<
+  typeof toolExecutionPolicyEvaluationSchema
+>;
+
 export const REDACTED_VALUE = "[REDACTED]";
 
 export const redactKeys = [

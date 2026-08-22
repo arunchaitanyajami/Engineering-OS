@@ -221,6 +221,119 @@ export const applicationMigrations: readonly SqlMigration[] = [
       CREATE INDEX IF NOT EXISTS idx_audit_events_correlation_id
         ON audit_events(correlation_id);
     `
+  },
+  {
+    version: 8,
+    name: "milestone_2_data_model",
+    sql: `
+      CREATE TABLE IF NOT EXISTS plugin_settings (
+        id TEXT PRIMARY KEY,
+        plugin_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (plugin_id) REFERENCES installed_plugins(plugin_id) ON DELETE CASCADE
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_plugin_settings_plugin_key
+        ON plugin_settings(plugin_id, key);
+
+      CREATE INDEX IF NOT EXISTS idx_plugin_settings_updated_at
+        ON plugin_settings(updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS plugin_runtime_state (
+        plugin_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL CHECK (
+          status IN ('stopped', 'starting', 'running', 'stopping', 'failed')
+        ),
+        healthy INTEGER NOT NULL CHECK (healthy IN (0, 1)),
+        process_id INTEGER,
+        initialized_at TEXT,
+        activated_at TEXT,
+        restart_count INTEGER NOT NULL DEFAULT 0 CHECK (restart_count >= 0),
+        last_error TEXT,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (plugin_id) REFERENCES installed_plugins(plugin_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_plugin_runtime_state_updated_at
+        ON plugin_runtime_state(updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS mcp_servers (
+        id TEXT PRIMARY KEY,
+        server_key TEXT NOT NULL UNIQUE,
+        plugin_id TEXT,
+        name TEXT NOT NULL,
+        transport TEXT NOT NULL CHECK (
+          transport IN ('stdio', 'streamable-http')
+        ),
+        configuration_json TEXT NOT NULL,
+        enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+        status TEXT NOT NULL CHECK (
+          status IN ('registered', 'disabled')
+        ),
+        protocol_version TEXT,
+        last_connected_at TEXT,
+        last_error TEXT,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (plugin_id) REFERENCES installed_plugins(plugin_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_mcp_servers_plugin_id
+        ON mcp_servers(plugin_id);
+
+      CREATE INDEX IF NOT EXISTS idx_mcp_servers_updated_at
+        ON mcp_servers(updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS mcp_capabilities (
+        id TEXT PRIMARY KEY,
+        server_id TEXT NOT NULL,
+        capability_type TEXT NOT NULL CHECK (
+          capability_type IN ('tool', 'resource', 'prompt')
+        ),
+        capability_name TEXT NOT NULL,
+        descriptor_json TEXT NOT NULL,
+        descriptor_hash TEXT NOT NULL,
+        discovered_at TEXT NOT NULL,
+        FOREIGN KEY (server_id) REFERENCES mcp_servers(id) ON DELETE CASCADE
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_capabilities_server_descriptor
+        ON mcp_capabilities(server_id, capability_type, capability_name);
+
+      CREATE INDEX IF NOT EXISTS idx_mcp_capabilities_discovered_at
+        ON mcp_capabilities(discovered_at DESC);
+
+      CREATE TABLE IF NOT EXISTS execution_audit (
+        id TEXT PRIMARY KEY,
+        execution_id TEXT NOT NULL UNIQUE,
+        plugin_id TEXT,
+        server_id TEXT NOT NULL,
+        capability_name TEXT NOT NULL,
+        risk_level TEXT NOT NULL CHECK (
+          risk_level IN (
+            'read-only',
+            'write',
+            'destructive',
+            'privileged',
+            'unknown'
+          )
+        ),
+        request_summary TEXT NOT NULL,
+        result_status TEXT NOT NULL CHECK (
+          result_status IN ('success', 'failure', 'denied', 'cancelled')
+        ),
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        FOREIGN KEY (plugin_id) REFERENCES installed_plugins(plugin_id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_execution_audit_started_at
+        ON execution_audit(started_at DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_execution_audit_plugin_id
+        ON execution_audit(plugin_id);
+    `
   }
 ];
 

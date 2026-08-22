@@ -448,7 +448,7 @@ describe("desktop backend server", () => {
       database: {
         ok: true,
         status: "ready",
-        migrationVersion: 7,
+        migrationVersion: 8,
         databasePath: runtime.context.databaseFilePath
       },
       configFilePath: runtime.context.configFilePath,
@@ -737,7 +737,7 @@ describe("desktop backend server", () => {
 
     expect(context.database.getHealth()).toMatchObject({
       ok: true,
-      migrationVersion: 7,
+      migrationVersion: 8,
       databasePath: context.databaseFilePath
     });
 

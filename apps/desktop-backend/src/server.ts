@@ -55,8 +55,8 @@ import {
   SqlitePluginRegistryRepository
 } from "@engineering-os/plugin-registry";
 import {
-  PermissionEngineError,
   AuditService,
+  PermissionEngineError,
   PermissionEngineService,
   SqliteAuditRepository,
   SqlitePermissionGrantRepository,
@@ -64,7 +64,7 @@ import {
   ToolSafetyService
 } from "@engineering-os/permission-engine";
 import {
-  EncryptedFileSecretStore,
+  createApplicationSecretStore,
   SecretService,
   SecretServiceError
 } from "@engineering-os/security";
@@ -835,9 +835,22 @@ export const createBackendContext = async (
   database.runMigrations();
   const auditRepository = new SqliteAuditRepository(database);
   const auditService = new AuditService(auditRepository);
-  const secretService = new SecretService(
-    await EncryptedFileSecretStore.open(secretsDirectoryPath)
-  );
+  const secretService = await createApplicationSecretStore({
+    secretsDirectory: secretsDirectoryPath,
+    audit: {
+      record: (input) => {
+        auditService.record({
+          actorType: "system",
+          action: input.action,
+          resourceType: "secret",
+          resourceId: input.namespace,
+          outcome: input.outcome === "success" ? "success" : "failure",
+          correlationId: input.namespace,
+          ...(input.key ? { metadata: { key: input.key } } : {})
+        });
+      }
+    }
+  });
   const pluginRegistryRepository = new SqlitePluginRegistryRepository(database);
   const pluginRegistry = new PluginRegistryService({
     repository: pluginRegistryRepository,

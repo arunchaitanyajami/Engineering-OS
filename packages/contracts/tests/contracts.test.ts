@@ -257,6 +257,66 @@ describe("pluginManifestSchema", () => {
 
     expect(result.success).toBe(false);
   });
+
+  it("rejects literal secret values in MCP environment declarations", () => {
+    const result = pluginManifestSchema.safeParse({
+      ...createValidManifest(),
+      permissions: [
+        {
+          scope: "process.spawn",
+          reason: "Starts the bundled MCP server for local reference workflows."
+        },
+        {
+          scope: "mcp.register-server",
+          reason: "Registers the plugin-owned MCP server with the gateway."
+        }
+      ],
+      mcp: [
+        {
+          id: "example",
+          transport: "stdio",
+          command: "node",
+          args: ["./dist/mcp/server.js"],
+          env: {
+            API_TOKEN: "plaintext-secret"
+          }
+        }
+      ]
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts plugin secret references in MCP environment declarations", () => {
+    const result = pluginManifestSchema.safeParse({
+      ...createValidManifest(),
+      permissions: [
+        {
+          scope: "process.spawn",
+          reason: "Starts the bundled MCP server for local reference workflows."
+        },
+        {
+          scope: "mcp.register-server",
+          reason: "Registers the plugin-owned MCP server with the gateway."
+        }
+      ],
+      mcp: [
+        {
+          id: "example",
+          transport: "stdio",
+          command: "node",
+          args: ["./dist/mcp/server.js"],
+          env: {
+            API_TOKEN: {
+              key: "token"
+            }
+          }
+        }
+      ]
+    });
+
+    expect(result.success).toBe(true);
+  });
 });
 
 describe("mcpServerRegistrationSchema", () => {

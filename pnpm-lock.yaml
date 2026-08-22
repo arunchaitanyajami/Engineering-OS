@@ -267,6 +267,12 @@ importers:
         specifier: workspace:*
         version: link:../plugin-registry
 
+  packages/plugin-sdk:
+    dependencies:
+      '@engineering-os/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
   packages/security:
     dependencies:
       '@engineering-os/contracts':

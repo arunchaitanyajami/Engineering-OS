@@ -331,6 +331,25 @@ export const pluginManifestSchema = z
         message: "MCP server declarations require mcp.register-server."
       });
     }
+
+    const sensitiveEnvironmentKeyPattern =
+      /(^|_)(API_KEY|ACCESS_KEY|CLIENT_SECRET|AUTH_TOKEN|TOKEN|SECRET|PASSWORD|PRIVATE_KEY|CREDENTIALS?|KEY)(_|$)/i;
+
+    for (const [serverIndex, server] of manifest.mcp.entries()) {
+      for (const [key, value] of Object.entries(server.env ?? {})) {
+        if (
+          typeof value === "string" &&
+          value.trim().length > 0 &&
+          sensitiveEnvironmentKeyPattern.test(key)
+        ) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["mcp", serverIndex, "env", key],
+            message: `MCP environment key '${key}' must use a plugin secret reference instead of a literal value.`
+          });
+        }
+      }
+    }
   });
 
 export type PluginManifest = z.infer<typeof pluginManifestSchema>;

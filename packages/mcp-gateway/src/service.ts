@@ -58,6 +58,9 @@ export interface McpGatewayServiceOptions {
   readonly startupTimeoutMs?: number;
   readonly startupStabilityPeriodMs?: number;
   readonly shutdownGracePeriodMs?: number;
+  readonly restartWindowMs?: number;
+  readonly maxRestartsPerWindow?: number;
+  readonly restartBackoffMs?: number;
   readonly classifyToolRisk?: (
     input: ToolRiskClassificationInput
   ) => ToolRiskLevel;
@@ -195,6 +198,9 @@ const createEmptyCatalog = (): McpCatalogSnapshot =>
 const DEFAULT_STARTUP_TIMEOUT_MS = 3_000;
 const DEFAULT_STARTUP_STABILITY_PERIOD_MS = 250;
 const DEFAULT_SHUTDOWN_GRACE_PERIOD_MS = 3_000;
+const DEFAULT_RESTART_WINDOW_MS = 60_000;
+const DEFAULT_MAX_RESTARTS_PER_WINDOW = 3;
+const DEFAULT_RESTART_BACKOFF_MS = 250;
 const MCP_GATEWAY_CLIENT_INFO = {
   name: "engineering-os-mcp-gateway",
   version: "0.1.0"
@@ -246,6 +252,7 @@ const toServerHealthSnapshot = (
     readonly discoveryStatus?: McpCapabilityDiscoveryStatus;
     readonly catalog?: McpCatalogSnapshot;
     readonly lastError?: string;
+    readonly restartCount?: number;
   } = {}
 ): McpServerHealthSnapshot =>
   mcpServerHealthSnapshotSchema.parse({
@@ -263,6 +270,7 @@ const toServerHealthSnapshot = (
         : "unknown",
     discoveryStatus: options.discoveryStatus ?? "not-started",
     catalog: options.catalog ?? createEmptyCatalog(),
+    restartCount: options.restartCount ?? 0,
     ...(options.lastError ? { lastError: options.lastError } : {})
   });
 
@@ -427,6 +435,15 @@ export class McpGatewayService {
   private readonly startupTimeoutMs: number;
   private readonly startupStabilityPeriodMs: number;
   private readonly shutdownGracePeriodMs: number;
+  private readonly restartWindowMs: number;
+  private readonly maxRestartsPerWindow: number;
+  private readonly restartBackoffMs: number;
+  private readonly desiredRunningServers = new Set<string>();
+  private readonly crashHistory = new Map<string, number[]>();
+  private readonly restartTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
   private readonly processEnv: NodeJS.ProcessEnv;
   private disposing = false;
 
@@ -440,6 +457,12 @@ export class McpGatewayService {
       options.startupStabilityPeriodMs ?? DEFAULT_STARTUP_STABILITY_PERIOD_MS;
     this.shutdownGracePeriodMs =
       options.shutdownGracePeriodMs ?? DEFAULT_SHUTDOWN_GRACE_PERIOD_MS;
+    this.restartWindowMs =
+      options.restartWindowMs ?? DEFAULT_RESTART_WINDOW_MS;
+    this.maxRestartsPerWindow =
+      options.maxRestartsPerWindow ?? DEFAULT_MAX_RESTARTS_PER_WINDOW;
+    this.restartBackoffMs =
+      options.restartBackoffMs ?? DEFAULT_RESTART_BACKOFF_MS;
     this.processEnv = process.env;
 
     for (const registration of options.systemRegistrations ?? []) {
@@ -534,6 +557,7 @@ export class McpGatewayService {
           catalog:
             this.catalogs.get(registration.registrationId) ??
             createEmptyCatalog(),
+          restartCount: this.getRestartCount(registration.registrationId),
           ...(lastError ? { lastError } : {})
         });
       }
@@ -955,6 +979,15 @@ export class McpGatewayService {
   async startServer(registrationId: string): Promise<McpServerHealthSnapshot> {
     return this.runWithLifecycleLock(registrationId, async () => {
       this.throwIfDisposing();
+      this.markDesiredRunning(registrationId);
+      return this.startServerInternal(registrationId);
+    });
+  }
+
+  private async startServerInternal(
+    registrationId: string
+  ): Promise<McpServerHealthSnapshot> {
+      this.throwIfDisposing();
       const registration = this.requireRegisteredServer(registrationId);
 
       if (!registration.enabled) {
@@ -1047,11 +1080,12 @@ export class McpGatewayService {
       });
 
       return this.inspectServerHealth(registrationId);
-    });
   }
 
   async stopServer(registrationId: string): Promise<McpServerHealthSnapshot> {
     return this.runWithLifecycleLock(registrationId, async () => {
+      this.clearDesiredRunning(registrationId);
+      this.clearRestartTimer(registrationId);
       this.requireRegisteredServer(registrationId);
       const runtime = this.runtimes.get(registrationId);
 
@@ -1079,6 +1113,13 @@ export class McpGatewayService {
 
   async dispose(): Promise<void> {
     this.disposing = true;
+
+    for (const registrationId of [...this.restartTimers.keys()]) {
+      this.clearRestartTimer(registrationId);
+    }
+
+    this.desiredRunningServers.clear();
+
     const registrationIds = new Set<string>([
       ...this.runtimes.keys(),
       ...this.lifecycleLocks.keys()
@@ -1108,6 +1149,7 @@ export class McpGatewayService {
       discoveryStatus:
         this.discoveryStatuses.get(registrationId) ?? "not-started",
       catalog: this.catalogs.get(registrationId) ?? createEmptyCatalog(),
+      restartCount: this.getRestartCount(registrationId),
       ...(lastError ? { lastError } : {})
     });
   }
@@ -1559,15 +1601,123 @@ export class McpGatewayService {
 
     const reason =
       code === null ? `signal ${signal ?? "unknown"}` : `code ${code}`;
-    this.lastErrors.set(
-      runtime.registrationId,
-      `MCP server '${runtime.registrationId}' exited unexpectedly with ${reason}.`
-    );
+    const errorMessage = `MCP server '${runtime.registrationId}' exited unexpectedly with ${reason}.`;
+    const restartCount = this.recordCrash(runtime.registrationId);
+
+    this.lastErrors.set(runtime.registrationId, errorMessage);
+    this.discoveryStatuses.set(runtime.registrationId, "failed");
     runtime.logger.warn("MCP stdio server exited unexpectedly.", {
       registrationId: runtime.registrationId,
       code,
-      signal
+      signal,
+      restartCount
     });
+
+    if (
+      !this.desiredRunningServers.has(runtime.registrationId) ||
+      this.disposing
+    ) {
+      return;
+    }
+
+    if (restartCount >= this.maxRestartsPerWindow) {
+      this.clearDesiredRunning(runtime.registrationId);
+      this.lastErrors.set(
+        runtime.registrationId,
+        `MCP server '${runtime.registrationId}' exceeded the restart limit after repeated crashes.`
+      );
+      return;
+    }
+
+    this.scheduleServerRestart(runtime.registrationId, errorMessage);
+  }
+
+  private scheduleServerRestart(
+    registrationId: string,
+    errorMessage: string
+  ): void {
+    this.clearRestartTimer(registrationId);
+
+    const restartTimer = globalThis.setTimeout(() => {
+      this.restartTimers.delete(registrationId);
+
+      if (
+        !this.desiredRunningServers.has(registrationId) ||
+        this.disposing ||
+        this.runtimes.has(registrationId)
+      ) {
+        return;
+      }
+
+      void this.runWithLifecycleLock(registrationId, async () => {
+        if (
+          !this.desiredRunningServers.has(registrationId) ||
+          this.disposing ||
+          this.runtimes.has(registrationId)
+        ) {
+          return;
+        }
+
+        try {
+          await this.startServerInternal(registrationId);
+        } catch (error) {
+          this.lastErrors.set(
+            registrationId,
+            this.toStartupErrorMessage(registrationId, error)
+          );
+          this.discoveryStatuses.set(registrationId, "failed");
+        }
+      }).catch((restartError) => {
+        this.lastErrors.set(
+          registrationId,
+          this.toErrorMessage(restartError)
+        );
+        this.discoveryStatuses.set(registrationId, "failed");
+      });
+    }, this.restartBackoffMs);
+
+    this.restartTimers.set(registrationId, restartTimer);
+    this.lastErrors.set(registrationId, errorMessage);
+  }
+
+  private recordCrash(registrationId: string): number {
+    const now = Date.now();
+    const activeWindow = (this.crashHistory.get(registrationId) ?? []).filter(
+      (timestamp) => now - timestamp <= this.restartWindowMs
+    );
+
+    activeWindow.push(now);
+    this.crashHistory.set(registrationId, activeWindow);
+    return activeWindow.length;
+  }
+
+  private getRestartCount(registrationId: string): number {
+    const now = Date.now();
+    return (
+      this.crashHistory
+        .get(registrationId)
+        ?.filter((timestamp) => now - timestamp <= this.restartWindowMs)
+        .length ?? 0
+    );
+  }
+
+  private markDesiredRunning(registrationId: string): void {
+    this.desiredRunningServers.add(registrationId);
+  }
+
+  private clearDesiredRunning(registrationId: string): void {
+    this.desiredRunningServers.delete(registrationId);
+  }
+
+  private clearRestartTimer(registrationId: string): void {
+    const restartTimer = this.restartTimers.get(registrationId);
+
+    if (!restartTimer) {
+      return;
+    }
+
+    clearTimeout(restartTimer);
+    this.restartTimers.delete(registrationId);
   }
 
   private waitForChildStability(

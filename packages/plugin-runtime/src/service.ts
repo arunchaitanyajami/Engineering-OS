@@ -24,6 +24,11 @@ import {
   type InstalledPlugin
 } from "@engineering-os/plugin-registry";
 
+import {
+  assertIpcMessageWithinLimit,
+  estimateIpcMessageBytes
+} from "./ipc-message-size.js";
+
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
 const DEFAULT_SHUTDOWN_GRACE_PERIOD_MS = 3_000;
@@ -635,6 +640,25 @@ export class PluginRuntimeService {
   }
 
   private handleChildMessage(runtime: ManagedPluginRuntime, message: unknown) {
+    try {
+      assertIpcMessageWithinLimit(
+        message,
+        `Plugin '${runtime.pluginId}' IPC message`
+      );
+    } catch (error) {
+      runtime.logger.warn("Plugin runtime sent an oversized IPC message.", {
+        pluginId: runtime.pluginId,
+        messageBytes: estimateIpcMessageBytes(message)
+      });
+      void this.handleUnexpectedTermination(
+        runtime,
+        error instanceof Error
+          ? error
+          : new Error("Plugin runtime sent an oversized IPC message.")
+      );
+      return;
+    }
+
     const brokerRequest = pluginRuntimeBrokerRequestSchema.safeParse(message);
 
     if (brokerRequest.success) {
@@ -940,6 +964,26 @@ export class PluginRuntimeService {
         reject,
         timeout
       });
+
+      try {
+        assertIpcMessageWithinLimit(
+          request,
+          `Plugin '${runtime.pluginId}' request '${request.requestId}'`
+        );
+      } catch (error) {
+        clearTimeout(timeout);
+        runtime.pendingResponses.delete(request.requestId);
+        reject(
+          new PluginRuntimeError(
+            "PLUGIN_RUNTIME_MESSAGE_TOO_LARGE",
+            error instanceof Error ? error.message : "IPC message is too large.",
+            413,
+            error
+          )
+        );
+        return;
+      }
+
       runtime.child.send(request, (error) => {
         if (!error) {
           return;

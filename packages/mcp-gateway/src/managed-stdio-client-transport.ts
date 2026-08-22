@@ -7,6 +7,7 @@ import {
   type JSONRPCMessage
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { MAX_RUNTIME_MESSAGE_BYTES } from "@engineering-os/contracts/unstable-runtime";
 
 export interface ManagedStdioClientTransportOptions {
   readonly command: string;
@@ -16,7 +17,7 @@ export interface ManagedStdioClientTransportOptions {
   readonly shutdownGracePeriodMs: number;
 }
 
-const MAX_MCP_MESSAGE_BYTES = 4 * 1024 * 1024;
+const MAX_MCP_MESSAGE_BYTES = MAX_RUNTIME_MESSAGE_BYTES;
 
 class ManagedStdioTransportError extends Error {
   constructor(
@@ -160,6 +161,17 @@ export class ManagedStdioClientTransport implements Transport {
 
     await new Promise<void>((resolve, reject) => {
       const serializedMessage = `${JSON.stringify(message)}\n`;
+
+      if (Buffer.byteLength(serializedMessage, "utf8") > MAX_MCP_MESSAGE_BYTES) {
+        reject(
+          new ManagedStdioTransportError(
+            "MCP_GATEWAY_MESSAGE_TOO_LARGE",
+            "Managed stdio transport refused to send an oversized MCP message."
+          )
+        );
+        return;
+      }
+
       let settled = false;
       const fail = (error: unknown) => {
         if (settled) {

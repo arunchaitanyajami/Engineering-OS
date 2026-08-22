@@ -451,6 +451,7 @@ export const mcpServerHealthSnapshotSchema = z
     healthState: mcpServerHealthStateSchema,
     discoveryStatus: mcpCapabilityDiscoveryStatusSchema,
     catalog: mcpCatalogSnapshotSchema,
+    restartCount: z.number().int().nonnegative().default(0),
     lastError: z.string().min(1).optional()
   })
   .strict();
@@ -458,6 +459,8 @@ export const mcpServerHealthSnapshotSchema = z
 export type McpServerHealthSnapshot = z.infer<
   typeof mcpServerHealthSnapshotSchema
 >;
+
+export const MAX_RUNTIME_MESSAGE_BYTES = 4 * 1024 * 1024;
 
 export interface SecretStore {
   get(namespace: string, key: string): Promise<string | null>;

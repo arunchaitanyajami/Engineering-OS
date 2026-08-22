@@ -782,6 +782,48 @@ describe("McpGatewayService", () => {
     });
   });
 
+  it("restarts MCP stdio servers after an unexpected post-startup exit", async () => {
+    const crashAfterReadyScript = defaultMcpServerScript.replace(
+      `        case "notifications/initialized":
+          return;`,
+      `        case "notifications/initialized":
+          setTimeout(() => process.exit(17), 1_000);
+          return;`
+    );
+    const { fixturesDirectory, pluginRegistry, gateway } =
+      await createGateway();
+    const { packageDirectory } = await createPluginPackage(fixturesDirectory, {
+      serverScript: crashAfterReadyScript
+    });
+
+    await pluginRegistry.registerLocalPluginPackage(packageDirectory);
+    pluginRegistry.enableInstalledPlugin("com.engineering-os.mcp-plugin");
+
+    const registrationId = "com.engineering-os.mcp-plugin:filesystem";
+    await gateway.startServer(registrationId);
+
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt <= 10_000) {
+      const health = gateway.inspectServerHealth(registrationId);
+
+      if (health.restartCount >= 1 && health.healthState === "healthy") {
+        expect(health).toMatchObject({
+          healthState: "healthy",
+          restartCount: 1
+        });
+        await gateway.stopServer(registrationId);
+        return;
+      }
+
+      await new Promise((resolve) => {
+        setTimeout(resolve, 50);
+      });
+    }
+
+    throw new Error("MCP server did not restart after an unexpected exit.");
+  });
+
   it("executes discovered MCP tools through the gateway boundary", async () => {
     const { fixturesDirectory, gateway } = await createGateway();
     const { serverDirectory } =

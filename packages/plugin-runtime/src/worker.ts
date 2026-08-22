@@ -26,6 +26,11 @@ import {
 } from "@engineering-os/contracts/unstable-runtime";
 import { calculateManagedInstallationHash } from "@engineering-os/plugin-registry";
 
+import {
+  assertIpcMessageWithinLimit,
+  estimateIpcMessageBytes
+} from "./ipc-message-size.js";
+
 interface RuntimePluginState {
   pluginId: string | null;
   installationRootPath: string | null;
@@ -78,6 +83,18 @@ const sendBrokerRequest = async (
       reject,
       timeout
     });
+
+    try {
+      assertIpcMessageWithinLimit(
+        request,
+        "Plugin permission broker IPC request"
+      );
+    } catch (error) {
+      clearTimeout(timeout);
+      pendingBrokerResponses.delete(request.requestId);
+      reject(error);
+      return;
+    }
 
     process.send?.(request, (error) => {
       if (!error) {
@@ -283,13 +300,28 @@ const sendResponse = (
     return;
   }
 
-  process.send(
-    rpcResponseSchema.parse({
-      protocolVersion: pluginRuntimeProtocolVersion,
-      requestId,
-      ...response
-    })
-  );
+  const payload = rpcResponseSchema.parse({
+    protocolVersion: pluginRuntimeProtocolVersion,
+    requestId,
+    ...response
+  });
+
+  try {
+    assertIpcMessageWithinLimit(payload, "Plugin runtime IPC response");
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        message: "Plugin runtime refused to send an oversized IPC response.",
+        requestId,
+        messageBytes: estimateIpcMessageBytes(payload),
+        error: error instanceof Error ? error.message : error
+      })
+    );
+    return;
+  }
+
+  process.send(payload);
 };
 
 const asRpcError = (error: unknown): RpcError => ({

@@ -144,4 +144,35 @@ describe("ManagedStdioClientTransport", () => {
 
     stdin.write = originalWrite;
   });
+
+  it("rejects outbound messages that exceed the maximum message size", async () => {
+    const { directory } = await createScript(`
+      process.stdin.on("data", () => {});
+      setInterval(() => {}, 1_000);
+      process.on("SIGTERM", () => process.exit(0));
+    `);
+    const transport = new ManagedStdioClientTransport({
+      command: "node",
+      args: ["./index.js"],
+      cwd: directory,
+      shutdownGracePeriodMs: 50
+    });
+
+    await transport.start();
+
+    await expect(
+      transport.send({
+        jsonrpc: "2.0",
+        method: "tools/list",
+        id: 1,
+        params: {
+          payload: "x".repeat(4 * 1024 * 1024)
+        }
+      })
+    ).rejects.toMatchObject({
+      code: "MCP_GATEWAY_MESSAGE_TOO_LARGE"
+    });
+
+    await transport.close();
+  });
 });

@@ -256,6 +256,42 @@ export class PermissionEngineService {
     return this.getPermissionReview(parsedRequest.pluginId);
   }
 
+  revokeAllPluginPermissions(pluginId: string): readonly string[] {
+    this.requireInstalledPlugin(pluginId);
+    const revokedAt = new Date().toISOString();
+    const revokedScopes: PersistedPluginPermissionGrant["scope"][] = [];
+
+    for (const grant of this.options.repository.listByPluginId(pluginId)) {
+      if (grant.revokedAt) {
+        continue;
+      }
+
+      this.options.repository.revokeGrant(pluginId, grant.scope, revokedAt);
+      revokedScopes.push(grant.scope);
+      this.recordAudit({
+        actorType: "system",
+        action: "permission.revoked",
+        resourceType: "plugin",
+        resourceId: pluginId,
+        outcome: "success",
+        correlationId: pluginId,
+        metadata: {
+          scope: grant.scope,
+          reason: "plugin-unregistered"
+        }
+      });
+    }
+
+    if (revokedScopes.length > 0) {
+      this.logger.info("Revoked all plugin permission grants.", {
+        pluginId,
+        revokedScopes
+      });
+    }
+
+    return revokedScopes;
+  }
+
   assertCanEnablePlugin(pluginId: string, sessionId?: string): void {
     const review = this.getPermissionReview(pluginId, sessionId);
 

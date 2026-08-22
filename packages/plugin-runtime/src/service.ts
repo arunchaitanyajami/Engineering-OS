@@ -3,7 +3,7 @@ import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
-import type { PermissionScope } from "@engineering-os/contracts";
+import { permissionScope, type PermissionScope } from "@engineering-os/contracts";
 import {
   activatePluginRequestSchema,
   healthCheckRequestSchema,
@@ -22,7 +22,8 @@ import {
   type PluginRuntimeHealthSnapshot,
   type PluginRuntimeStatus,
   type PermissionGrantDecision,
-  type ReadConfigurationResponse
+  type ReadConfigurationResponse,
+  type SecretStore
 } from "@engineering-os/contracts/unstable-runtime";
 import type { Logger } from "@engineering-os/logger";
 import {
@@ -121,6 +122,7 @@ export interface PluginRuntimeServiceOptions {
   readonly worker: PluginRuntimeWorkerOptions;
   readonly permissionBroker?: PluginPermissionBroker;
   readonly configurationBroker?: PluginConfigurationBroker;
+  readonly secretStore?: SecretStore;
   readonly requestTimeoutMs?: number;
   readonly startupTimeoutMs?: number;
   readonly shutdownGracePeriodMs?: number;
@@ -917,6 +919,214 @@ export class PluginRuntimeService {
                   pluginId: request.pluginId,
                   key: request.key
                 })
+              }
+            })
+          );
+          return;
+        }
+
+        case "broker-read-secret": {
+          if (
+            !this.options.permissionBroker?.checkPermission({
+              pluginId: request.pluginId,
+              scope: permissionScope("secrets.read")
+            })
+          ) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_SECRET_ACCESS_DENIED",
+                  message: "Plugin does not have secrets.read permission."
+                }
+              })
+            );
+            return;
+          }
+
+          const secretStore = this.options.secretStore;
+
+          if (!secretStore) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_SECRET_BROKER_UNAVAILABLE",
+                  message: "Plugin secret broker is unavailable."
+                }
+              })
+            );
+            return;
+          }
+
+          runtime.child.send(
+            rpcResponseSchema.parse({
+              protocolVersion: pluginRuntimeProtocolVersion,
+              requestId: request.requestId,
+              success: true,
+              data: {
+                value: await secretStore.get(request.pluginId, request.key)
+              }
+            })
+          );
+          return;
+        }
+
+        case "broker-write-secret": {
+          if (
+            !this.options.permissionBroker?.checkPermission({
+              pluginId: request.pluginId,
+              scope: permissionScope("secrets.write")
+            })
+          ) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_SECRET_ACCESS_DENIED",
+                  message: "Plugin does not have secrets.write permission."
+                }
+              })
+            );
+            return;
+          }
+
+          const secretStore = this.options.secretStore;
+
+          if (!secretStore) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_SECRET_BROKER_UNAVAILABLE",
+                  message: "Plugin secret broker is unavailable."
+                }
+              })
+            );
+            return;
+          }
+
+          await secretStore.set(
+            request.pluginId,
+            request.key,
+            request.value
+          );
+
+          runtime.child.send(
+            rpcResponseSchema.parse({
+              protocolVersion: pluginRuntimeProtocolVersion,
+              requestId: request.requestId,
+              success: true,
+              data: {}
+            })
+          );
+          return;
+        }
+
+        case "broker-delete-secret": {
+          if (
+            !this.options.permissionBroker?.checkPermission({
+              pluginId: request.pluginId,
+              scope: permissionScope("secrets.write")
+            })
+          ) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_SECRET_ACCESS_DENIED",
+                  message: "Plugin does not have secrets.write permission."
+                }
+              })
+            );
+            return;
+          }
+
+          const secretStore = this.options.secretStore;
+
+          if (!secretStore) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_SECRET_BROKER_UNAVAILABLE",
+                  message: "Plugin secret broker is unavailable."
+                }
+              })
+            );
+            return;
+          }
+
+          await secretStore.delete(request.pluginId, request.key);
+
+          runtime.child.send(
+            rpcResponseSchema.parse({
+              protocolVersion: pluginRuntimeProtocolVersion,
+              requestId: request.requestId,
+              success: true,
+              data: {}
+            })
+          );
+          return;
+        }
+
+        case "broker-list-secret-keys": {
+          if (
+            !this.options.permissionBroker?.checkPermission({
+              pluginId: request.pluginId,
+              scope: permissionScope("secrets.read")
+            })
+          ) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_SECRET_ACCESS_DENIED",
+                  message: "Plugin does not have secrets.read permission."
+                }
+              })
+            );
+            return;
+          }
+
+          const secretStore = this.options.secretStore;
+
+          if (!secretStore) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_SECRET_BROKER_UNAVAILABLE",
+                  message: "Plugin secret broker is unavailable."
+                }
+              })
+            );
+            return;
+          }
+
+          runtime.child.send(
+            rpcResponseSchema.parse({
+              protocolVersion: pluginRuntimeProtocolVersion,
+              requestId: request.requestId,
+              success: true,
+              data: {
+                keys: await secretStore.listKeys(request.pluginId)
               }
             })
           );

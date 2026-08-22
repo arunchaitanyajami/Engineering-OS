@@ -376,6 +376,39 @@ export class PluginRegistryService {
     return this.updateInstalledPluginEnabled(pluginId, false);
   }
 
+  async unregisterInstalledPlugin(pluginId: string): Promise<void> {
+    return this.runWithInstallationLock(pluginId, async () => {
+      const existingPlugin = this.options.repository.findByPluginId(pluginId);
+
+      if (!existingPlugin) {
+        throw new PluginRegistryError(
+          "PLUGIN_NOT_FOUND",
+          `Plugin '${pluginId}' is not registered.`,
+          404
+        );
+      }
+
+      if (existingPlugin.enabled) {
+        throw new PluginRegistryError(
+          "PLUGIN_MUST_BE_DISABLED",
+          `Plugin '${pluginId}' must be disabled before it can be unregistered.`,
+          409
+        );
+      }
+
+      await rm(existingPlugin.installation.rootPath, {
+        recursive: true,
+        force: true
+      });
+      this.options.repository.deleteByPluginId(pluginId);
+
+      this.logger.info("Unregistered installed plugin.", {
+        pluginId,
+        version: existingPlugin.manifest.version
+      });
+    });
+  }
+
   private updateInstalledPluginEnabled(
     pluginId: string,
     enabled: boolean

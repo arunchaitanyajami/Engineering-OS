@@ -2587,4 +2587,153 @@ describe("desktop backend server", () => {
       ]
     });
   });
+
+  it("exposes core service routes for inspect, secrets, audit, and unregister", async () => {
+    runtime = await startRuntime();
+    const packageDirectory = await createLocalPluginPackage(appDataDirectory, {
+      pluginId: "com.engineering-os.core-services",
+      mcp: [
+        {
+          id: "filesystem",
+          transport: "stdio",
+          command: "node",
+          args: ["./index.js"],
+          cwd: "./servers/filesystem"
+        }
+      ]
+    });
+
+    const inspectResponse = await fetch(
+      `${runtime.baseUrl}/plugins/inspect-local`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({ packagePath: packageDirectory })
+      }
+    );
+
+    expect(inspectResponse.status).toBe(200);
+    await expect(inspectResponse.json()).resolves.toMatchObject({
+      package: {
+        manifest: {
+          id: "com.engineering-os.core-services"
+        }
+      }
+    });
+
+    await fetch(`${runtime.baseUrl}/plugins/register-local`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({ packagePath: packageDirectory })
+    });
+
+    const pluginResponse = await fetch(
+      `${runtime.baseUrl}/plugins?pluginId=com.engineering-os.core-services`,
+      {
+        headers: authenticatedHeaders()
+      }
+    );
+
+    expect(pluginResponse.status).toBe(200);
+    await expect(pluginResponse.json()).resolves.toMatchObject({
+      plugin: {
+        pluginId: "com.engineering-os.core-services"
+      }
+    });
+
+    const secretResponse = await fetch(`${runtime.baseUrl}/secrets`, {
+      method: "PUT",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        namespace: "com.engineering-os.core-services",
+        key: "token",
+        value: "secret-value"
+      })
+    });
+
+    expect(secretResponse.status).toBe(200);
+
+    const secretKeysResponse = await fetch(
+      `${runtime.baseUrl}/secrets/keys?namespace=com.engineering-os.core-services`,
+      {
+        headers: authenticatedHeaders()
+      }
+    );
+
+    expect(secretKeysResponse.status).toBe(200);
+    await expect(secretKeysResponse.json()).resolves.toMatchObject({
+      keys: ["token"]
+    });
+
+    await grantAllPluginPermissions("com.engineering-os.core-services");
+
+    const enableResponse = await fetch(`${runtime.baseUrl}/plugins/enable`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        pluginId: "com.engineering-os.core-services"
+      })
+    });
+
+    expect(enableResponse.status).toBe(200);
+
+    const auditResponse = await fetch(
+      `${runtime.baseUrl}/audit?pluginId=com.engineering-os.core-services&limit=10`,
+      {
+        headers: authenticatedHeaders()
+      }
+    );
+
+    expect(auditResponse.status).toBe(200);
+    await expect(auditResponse.json()).resolves.toMatchObject({
+      events: expect.arrayContaining([
+        expect.objectContaining({
+          action: "permission.granted",
+          resourceId: "com.engineering-os.core-services"
+        })
+      ])
+    });
+
+    await fetch(`${runtime.baseUrl}/plugins/disable`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        pluginId: "com.engineering-os.core-services"
+      })
+    });
+
+    const unregisterResponse = await fetch(
+      `${runtime.baseUrl}/plugins/unregister`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({
+          pluginId: "com.engineering-os.core-services"
+        })
+      }
+    );
+
+    expect(unregisterResponse.status).toBe(200);
+
+    const missingPluginResponse = await fetch(
+      `${runtime.baseUrl}/plugins?pluginId=com.engineering-os.core-services`,
+      {
+        headers: authenticatedHeaders()
+      }
+    );
+
+    expect(missingPluginResponse.status).toBe(404);
+  });
 });

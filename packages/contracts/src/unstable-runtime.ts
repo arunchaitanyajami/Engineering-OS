@@ -790,10 +790,81 @@ export type ReadPluginConfigurationBrokerResponse = z.infer<
   typeof readPluginConfigurationBrokerResponseSchema
 >;
 
+export const readPluginSecretBrokerRequestSchema = z
+  .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
+    type: z.literal("broker-read-secret"),
+    requestId: z.string().min(1),
+    pluginId: pluginIdSchema,
+    key: keySchema
+  })
+  .strict();
+
+export const writePluginSecretBrokerRequestSchema = z
+  .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
+    type: z.literal("broker-write-secret"),
+    requestId: z.string().min(1),
+    pluginId: pluginIdSchema,
+    key: keySchema,
+    value: z.string().min(1)
+  })
+  .strict();
+
+export const deletePluginSecretBrokerRequestSchema = z
+  .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
+    type: z.literal("broker-delete-secret"),
+    requestId: z.string().min(1),
+    pluginId: pluginIdSchema,
+    key: keySchema
+  })
+  .strict();
+
+export const listPluginSecretKeysBrokerRequestSchema = z
+  .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
+    type: z.literal("broker-list-secret-keys"),
+    requestId: z.string().min(1),
+    pluginId: pluginIdSchema
+  })
+  .strict();
+
+export const readPluginSecretBrokerResponseSchema = z
+  .object({
+    value: z.string().nullable()
+  })
+  .strict();
+
+export const listPluginSecretKeysBrokerResponseSchema = z
+  .object({
+    keys: z.array(keySchema)
+  })
+  .strict();
+
+export const secretStoreSetRequestSchema = z
+  .object({
+    namespace: keySchema,
+    key: keySchema,
+    value: z.string().min(1)
+  })
+  .strict();
+
+export const secretStoreDeleteRequestSchema = z
+  .object({
+    namespace: keySchema,
+    key: keySchema
+  })
+  .strict();
+
 export const pluginRuntimeBrokerRequestSchema = z.discriminatedUnion("type", [
   checkPluginPermissionBrokerRequestSchema,
   requestPluginPermissionBrokerRequestSchema,
-  readPluginConfigurationBrokerRequestSchema
+  readPluginConfigurationBrokerRequestSchema,
+  readPluginSecretBrokerRequestSchema,
+  writePluginSecretBrokerRequestSchema,
+  deletePluginSecretBrokerRequestSchema,
+  listPluginSecretKeysBrokerRequestSchema
 ]);
 
 export type PluginRuntimeBrokerRequest = z.infer<

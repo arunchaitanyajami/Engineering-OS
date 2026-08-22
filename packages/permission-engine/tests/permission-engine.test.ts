@@ -377,7 +377,7 @@ describe("PermissionEngineService", () => {
       grants: [{ scope: "tool.execute", decision: "always-allow" }]
     });
 
-    expect(auditRepository.listRecent(1)).toMatchObject([
+    expect(auditRepository.list({ limit: 1 })).toMatchObject([
       {
         action: "permission.granted",
         resourceId: installedPlugin.pluginId,

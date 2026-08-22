@@ -5,6 +5,7 @@ import type {
 } from "@engineering-os/contracts/unstable-runtime";
 import { McpGatewayError, McpGatewayService } from "@engineering-os/mcp-gateway";
 import { PermissionEngineService } from "@engineering-os/permission-engine";
+import type { SecretStore } from "@engineering-os/contracts/unstable-runtime";
 import type { InstalledPlugin } from "@engineering-os/plugin-registry";
 import {
   PluginRegistryError,
@@ -17,6 +18,7 @@ export interface PluginLifecycleServiceOptions {
   readonly pluginRuntime: PluginRuntimeService;
   readonly mcpGateway: McpGatewayService;
   readonly permissionEngine: PermissionEngineService;
+  readonly secretStore?: SecretStore;
 }
 
 export interface PluginEnableOptions {
@@ -46,6 +48,39 @@ export class PluginLifecycleService {
       await this.options.mcpGateway.stopServersForPlugin(pluginId);
       await this.options.pluginRuntime.stopPlugin(pluginId);
       return this.options.pluginRegistry.disableInstalledPlugin(pluginId);
+    });
+  }
+
+  unregisterPlugin(pluginId: string): Promise<void> {
+    return this.runWithLifecycleLock(pluginId, async () => {
+      await this.options.mcpGateway.stopServersForPlugin(pluginId);
+
+      try {
+        await this.options.pluginRuntime.stopPlugin(pluginId);
+      } catch {
+        // Runtime may already be stopped during uninstall.
+      }
+
+      const installedPlugin =
+        this.options.pluginRegistry.getInstalledPlugin(pluginId);
+
+      if (installedPlugin?.enabled) {
+        await this.options.pluginRegistry.disableInstalledPlugin(pluginId);
+      }
+
+      this.options.permissionEngine.revokeAllPluginPermissions(pluginId);
+
+      if (this.options.secretStore) {
+        const secretKeys = await this.options.secretStore.listKeys(pluginId);
+
+        await Promise.all(
+          secretKeys.map((key) =>
+            this.options.secretStore?.delete(pluginId, key)
+          )
+        );
+      }
+
+      await this.options.pluginRegistry.unregisterInstalledPlugin(pluginId);
     });
   }
 

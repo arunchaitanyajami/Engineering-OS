@@ -17,6 +17,7 @@
     "@engineering-os/permission-engine": "workspace:*",
     "@engineering-os/plugin-registry": "workspace:*",
     "@engineering-os/plugin-runtime": "workspace:*",
-    "@engineering-os/platform": "workspace:*"
+    "@engineering-os/platform": "workspace:*",
+    "@engineering-os/security": "workspace:*"
   }
 }

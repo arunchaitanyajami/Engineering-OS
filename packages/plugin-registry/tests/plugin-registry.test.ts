@@ -411,4 +411,70 @@ describe("PluginRegistryService", () => {
     );
     expect(disabledPlugin.enabled).toBe(false);
   });
+
+  it("unregisters a disabled plugin and removes its managed installation", async () => {
+    const fixturesDirectory = await mkdtemp(
+      join(tmpdir(), "engineering-os-plugin-registry-")
+    );
+    directories.push(fixturesDirectory);
+
+    const database = new ApplicationDatabase(":memory:");
+    database.runMigrations();
+    databases.push(database);
+    const installationsRootPath = join(fixturesDirectory, "managed-plugins");
+
+    const registry = new PluginRegistryService({
+      repository: new SqlitePluginRegistryRepository(database),
+      logger: createLogger({ component: "plugin-registry-test" }),
+      engineeringOsVersion: "0.1.0",
+      installationsRootPath
+    });
+    const packageDirectory = await createLocalPluginPackage(fixturesDirectory, {
+      id: "com.engineering-os.unregister"
+    });
+    const installedPlugin =
+      await registry.registerLocalPluginPackage(packageDirectory);
+
+    await registry.unregisterInstalledPlugin(installedPlugin.pluginId);
+
+    expect(registry.getInstalledPlugin(installedPlugin.pluginId)).toBeNull();
+    await expect(
+      access(installedPlugin.installation.rootPath)
+    ).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+  });
+
+  it("rejects unregistering an enabled plugin", async () => {
+    const fixturesDirectory = await mkdtemp(
+      join(tmpdir(), "engineering-os-plugin-registry-")
+    );
+    directories.push(fixturesDirectory);
+
+    const database = new ApplicationDatabase(":memory:");
+    database.runMigrations();
+    databases.push(database);
+    const installationsRootPath = join(fixturesDirectory, "managed-plugins");
+
+    const registry = new PluginRegistryService({
+      repository: new SqlitePluginRegistryRepository(database),
+      logger: createLogger({ component: "plugin-registry-test" }),
+      engineeringOsVersion: "0.1.0",
+      installationsRootPath
+    });
+    const packageDirectory = await createLocalPluginPackage(fixturesDirectory, {
+      id: "com.engineering-os.unregister-enabled"
+    });
+    const installedPlugin =
+      await registry.registerLocalPluginPackage(packageDirectory);
+
+    registry.enableInstalledPlugin(installedPlugin.pluginId);
+
+    await expect(
+      registry.unregisterInstalledPlugin(installedPlugin.pluginId)
+    ).rejects.toMatchObject({
+      code: "PLUGIN_MUST_BE_DISABLED",
+      statusCode: 409
+    });
+  });
 });

@@ -1,4 +1,5 @@
 export * from "./audit-repository.js";
+export * from "./audit-service.js";
 export * from "./constraints.js";
 export * from "./errors.js";
 export * from "./repository.js";

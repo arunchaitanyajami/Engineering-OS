@@ -27,6 +27,8 @@ import {
   pluginRuntimeInvokeCapabilityRequestSchema,
   pluginRuntimeReadConfigurationRequestSchema,
   revokePluginPermissionRequestSchema,
+  secretStoreDeleteRequestSchema,
+  secretStoreSetRequestSchema,
   setToolPolicyRequestSchema,
   toolExecutionRequestSchema
 } from "@engineering-os/contracts/unstable-runtime";
@@ -54,12 +56,18 @@ import {
 } from "@engineering-os/plugin-registry";
 import {
   PermissionEngineError,
+  AuditService,
   PermissionEngineService,
   SqliteAuditRepository,
   SqlitePermissionGrantRepository,
   SqliteToolPolicyRepository,
   ToolSafetyService
 } from "@engineering-os/permission-engine";
+import {
+  EncryptedFileSecretStore,
+  SecretService,
+  SecretServiceError
+} from "@engineering-os/security";
 import {
   ApplicationDatabase,
   type ApplicationDatabaseHealth
@@ -92,6 +100,7 @@ const MAX_PLUGIN_PACKAGE_PATH_BYTES = 8 * 1024;
 const SHUTDOWN_TIMEOUT_MS = 1_000;
 const READY_MESSAGE_PREFIX = "ENGINEERING_OS_BACKEND_READY ";
 const PLUGINS_DIRECTORY_NAME = "plugins";
+const SECRETS_DIRECTORY_NAME = "secrets";
 const ALLOWED_TAURI_ORIGINS = new Set([
   "tauri://localhost",
   "http://tauri.localhost",
@@ -148,6 +157,8 @@ export interface BackendContext {
   readonly pluginRuntime: PluginRuntimeService;
   readonly pluginLifecycle: PluginLifecycleService;
   readonly permissionEngine: PermissionEngineService;
+  readonly auditService: AuditService;
+  readonly secretService: SecretService;
   readonly toolSafety: ToolSafetyService;
   readonly logger: ReturnType<typeof createLogger>;
   flushLogs(): Promise<void>;
@@ -340,6 +351,10 @@ const asPublicError = (
         ? new BackendPublicError(error.code, error.message, error.statusCode, {
             cause: error.cause ?? error
           })
+        : error instanceof SecretServiceError
+          ? new BackendPublicError(error.code, error.message, error.statusCode, {
+              cause: error.cause ?? error
+            })
         : error instanceof BackendPublicError
           ? error
           : new BackendPublicError(
@@ -804,17 +819,25 @@ export const createBackendContext = async (
     MCP_USER_REGISTRATIONS_FILE_NAME
   );
   const pluginsDirectoryPath = join(appDataDirectory, PLUGINS_DIRECTORY_NAME);
+  const secretsDirectoryPath = join(appDataDirectory, SECRETS_DIRECTORY_NAME);
   const fileLogTransport = new FileLogTransport(logFilePath);
 
   await ensureDirectory(appDataDirectory);
   await ensureDirectory(join(appDataDirectory, LOG_DIRECTORY_NAME));
   await ensureDirectory(pluginsDirectoryPath);
+  await ensureDirectory(secretsDirectoryPath);
 
   const logger = createLogger({
     component: "desktop-backend",
     transport: fileLogTransport
   });
   const database = new ApplicationDatabase(databaseFilePath, logger);
+  database.runMigrations();
+  const auditRepository = new SqliteAuditRepository(database);
+  const auditService = new AuditService(auditRepository);
+  const secretService = new SecretService(
+    await EncryptedFileSecretStore.open(secretsDirectoryPath)
+  );
   const pluginRegistryRepository = new SqlitePluginRegistryRepository(database);
   const pluginRegistry = new PluginRegistryService({
     repository: pluginRegistryRepository,
@@ -832,12 +855,13 @@ export const createBackendContext = async (
     installedPlugins: pluginRegistry,
     logger,
     userRegistrations: await mcpUserRegistrationStore.load(),
-    classifyToolRisk: (input) => toolSafety.resolveRiskLevel(input)
+    classifyToolRisk: (input) => toolSafety.resolveRiskLevel(input),
+    secretStore: secretService
   });
   const permissionEngine = new PermissionEngineService({
     installedPlugins: pluginRegistry,
     repository: new SqlitePermissionGrantRepository(database),
-    auditRepository: new SqliteAuditRepository(database),
+    auditRepository,
     logger
   });
   const pluginRuntime = new PluginRuntimeService({
@@ -851,15 +875,16 @@ export const createBackendContext = async (
     },
     configurationBroker: {
       getConfiguration: () => null
-    }
+    },
+    secretStore: secretService
   });
   const pluginLifecycle = new PluginLifecycleService({
     pluginRegistry,
     pluginRuntime,
     mcpGateway,
-    permissionEngine
+    permissionEngine,
+    secretStore: secretService
   });
-  database.runMigrations();
   database.setMetadata("database_status", "ready");
 
   return {
@@ -877,6 +902,8 @@ export const createBackendContext = async (
     pluginRuntime,
     pluginLifecycle,
     permissionEngine,
+    auditService,
+    secretService,
     toolSafety,
     logger,
     flushLogs: () => fileLogTransport.flush()
@@ -1227,9 +1254,140 @@ export const createDesktopBackendHandler =
       }
 
       if (request.method === "GET" && requestUrl.pathname === "/plugins") {
+        const pluginId = requestUrl.searchParams.get("pluginId")?.trim();
+
+        if (pluginId) {
+          const plugin = context.pluginRegistry.getInstalledPlugin(pluginId);
+
+          if (!plugin) {
+            throw new BackendPublicError(
+              "PLUGIN_NOT_FOUND",
+              `Plugin '${pluginId}' is not registered.`,
+              404
+            );
+          }
+
+          writeJson(response, { plugin });
+          return;
+        }
+
         writeJson(response, {
           plugins: context.pluginRegistry.listInstalledPlugins()
         });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/plugins/inspect-local"
+      ) {
+        const { packagePath } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          registerLocalPluginRequestSchema,
+          "PLUGIN_INSPECT_REQUEST_INVALID",
+          "Plugin inspect request is invalid."
+        );
+
+        validatePluginPackagePath(packagePath);
+        writeJson(response, {
+          package: await context.pluginRegistry.inspectLocalPluginPackage(
+            packagePath
+          )
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/plugins/unregister"
+      ) {
+        const { pluginId } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          pluginRuntimeControlRequestSchema,
+          "PLUGIN_UNREGISTER_REQUEST_INVALID",
+          "Plugin unregister request is invalid."
+        );
+
+        await context.pluginLifecycle.unregisterPlugin(pluginId);
+        writeJson(response, { ok: true });
+        return;
+      }
+
+      if (request.method === "GET" && requestUrl.pathname === "/audit") {
+        const limitValue = requestUrl.searchParams.get("limit")?.trim();
+        const parsedLimit =
+          limitValue === undefined ? 100 : Number.parseInt(limitValue, 10);
+
+        if (
+          !Number.isInteger(parsedLimit) ||
+          parsedLimit < 1 ||
+          parsedLimit > 500
+        ) {
+          throw new BackendPublicError(
+            "AUDIT_REQUEST_INVALID",
+            "Audit request is invalid.",
+            400
+          );
+        }
+
+        writeJson(response, {
+          events: context.auditService.listRecent({
+            limit: parsedLimit,
+            ...(requestUrl.searchParams.get("pluginId")?.trim()
+              ? { pluginId: requestUrl.searchParams.get("pluginId")!.trim() }
+              : {}),
+            ...(requestUrl.searchParams.get("action")?.trim()
+              ? { action: requestUrl.searchParams.get("action")!.trim() }
+              : {})
+          })
+        });
+        return;
+      }
+
+      if (request.method === "GET" && requestUrl.pathname === "/secrets/keys") {
+        const namespace = requestUrl.searchParams.get("namespace")?.trim();
+
+        if (!namespace) {
+          throw new BackendPublicError(
+            "SECRET_REQUEST_INVALID",
+            "Secret request is invalid.",
+            400
+          );
+        }
+
+        writeJson(response, {
+          keys: await context.secretService.listKeys(namespace)
+        });
+        return;
+      }
+
+      if (request.method === "PUT" && requestUrl.pathname === "/secrets") {
+        const { namespace, key, value } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          secretStoreSetRequestSchema,
+          "SECRET_REQUEST_INVALID",
+          "Secret request is invalid."
+        );
+
+        await context.secretService.set(namespace, key, value);
+        writeJson(response, { ok: true });
+        return;
+      }
+
+      if (request.method === "DELETE" && requestUrl.pathname === "/secrets") {
+        const { namespace, key } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          secretStoreDeleteRequestSchema,
+          "SECRET_REQUEST_INVALID",
+          "Secret request is invalid."
+        );
+
+        await context.secretService.delete(namespace, key);
+        writeJson(response, { ok: true });
         return;
       }
 

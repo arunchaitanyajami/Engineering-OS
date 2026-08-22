@@ -12,6 +12,10 @@ import {
   type ToolRiskClassificationInput
 } from "@engineering-os/mcp-gateway";
 import {
+  EncryptedFileSecretStore,
+  SecretService
+} from "@engineering-os/security";
+import {
   PluginRegistryService,
   SqlitePluginRegistryRepository
 } from "@engineering-os/plugin-registry";
@@ -1865,6 +1869,43 @@ describe("McpGatewayService", () => {
       code: "MCP_GATEWAY_SECRET_REFERENCES_UNSUPPORTED",
       statusCode: 501
     });
+  });
+
+  it("resolves plugin secret references when a secret store is configured", async () => {
+    const secretsDirectory = await mkdtemp(
+      join(tmpdir(), "engineering-os-mcp-secrets-")
+    );
+    directories.push(secretsDirectory);
+    const secretStore = new SecretService(
+      await EncryptedFileSecretStore.open(secretsDirectory)
+    );
+    const { fixturesDirectory, pluginRegistry } = await createGateway();
+    const gatewayWithSecrets = new McpGatewayService({
+      installedPlugins: pluginRegistry,
+      logger: createLogger({ component: "mcp-gateway-test" }),
+      classifyToolRisk: (input) => classifyToolRiskForTests(input),
+      secretStore
+    });
+    const { packageDirectory } = await createPluginPackage(fixturesDirectory, {
+      env: {
+        API_TOKEN: {
+          key: "api-token"
+        }
+      }
+    });
+    const installedPlugin =
+      await pluginRegistry.registerLocalPluginPackage(packageDirectory);
+
+    await secretStore.set(installedPlugin.pluginId, "api-token", "resolved-token");
+    pluginRegistry.enableInstalledPlugin(installedPlugin.pluginId);
+
+    await expect(
+      gatewayWithSecrets.startServer("com.engineering-os.mcp-plugin:filesystem")
+    ).resolves.toMatchObject({
+      healthState: "healthy"
+    });
+
+    await gatewayWithSecrets.stopServer("com.engineering-os.mcp-plugin:filesystem");
   });
 
   it("rejects stdio servers that exit before startup stabilizes", async () => {

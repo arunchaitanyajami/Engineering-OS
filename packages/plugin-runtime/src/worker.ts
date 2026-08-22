@@ -17,6 +17,8 @@ import {
   pluginRuntimeProtocolVersion,
   readConfigurationResponseSchema,
   readPluginConfigurationBrokerResponseSchema,
+  readPluginSecretBrokerResponseSchema,
+  listPluginSecretKeysBrokerResponseSchema,
   requestPluginPermissionBrokerResponseSchema,
   rpcResponseSchema,
   type EngineeringOsPlugin,
@@ -147,6 +149,73 @@ const createConfigurationApi = (): EngineeringOsPluginContext["configuration"] =
   }
 });
 
+const createSecretsApi = (): EngineeringOsPluginContext["secrets"] => ({
+  async get(key) {
+    if (!state.pluginId) {
+      return null;
+    }
+
+    const response = await sendBrokerRequest(
+      pluginRuntimeBrokerRequestSchema.parse({
+        protocolVersion: pluginRuntimeProtocolVersion,
+        type: "broker-read-secret",
+        requestId: randomUUID(),
+        pluginId: state.pluginId,
+        key
+      })
+    );
+
+    return readPluginSecretBrokerResponseSchema.parse(response).value;
+  },
+  async set(key, value) {
+    if (!state.pluginId) {
+      throw new Error("Plugin secret storage is unavailable.");
+    }
+
+    await sendBrokerRequest(
+      pluginRuntimeBrokerRequestSchema.parse({
+        protocolVersion: pluginRuntimeProtocolVersion,
+        type: "broker-write-secret",
+        requestId: randomUUID(),
+        pluginId: state.pluginId,
+        key,
+        value
+      })
+    );
+  },
+  async delete(key) {
+    if (!state.pluginId) {
+      return;
+    }
+
+    await sendBrokerRequest(
+      pluginRuntimeBrokerRequestSchema.parse({
+        protocolVersion: pluginRuntimeProtocolVersion,
+        type: "broker-delete-secret",
+        requestId: randomUUID(),
+        pluginId: state.pluginId,
+        key
+      })
+    );
+  },
+  async listKeys() {
+    if (!state.pluginId) {
+      return [];
+    }
+
+    const response = await sendBrokerRequest(
+      pluginRuntimeBrokerRequestSchema.parse({
+        protocolVersion: pluginRuntimeProtocolVersion,
+        type: "broker-list-secret-keys",
+        requestId: randomUUID(),
+        pluginId: state.pluginId
+      })
+    );
+
+    return listPluginSecretKeysBrokerResponseSchema.parse(response).keys;
+  }
+});
+
 const createContext = (
   manifest: PluginManifest
 ): EngineeringOsPluginContext => ({
@@ -180,28 +249,7 @@ const createContext = (
     }
   },
   configuration: createConfigurationApi(),
-  secrets: {
-    async get() {
-      return Promise.reject(
-        createUnsupportedMilestone23Error("Plugin secret storage")
-      );
-    },
-    async set() {
-      return Promise.reject(
-        createUnsupportedMilestone23Error("Plugin secret storage")
-      );
-    },
-    async delete() {
-      return Promise.reject(
-        createUnsupportedMilestone23Error("Plugin secret storage")
-      );
-    },
-    async listKeys() {
-      return Promise.reject(
-        createUnsupportedMilestone23Error("Plugin secret storage")
-      );
-    }
-  },
+  secrets: createSecretsApi(),
   storage: {
     async get() {
       return Promise.reject(

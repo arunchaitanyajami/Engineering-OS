@@ -71,9 +71,15 @@ export interface AuditRecordInput {
   readonly metadata?: Record<string, unknown>;
 }
 
+export interface AuditListOptions {
+  readonly limit?: number;
+  readonly pluginId?: string;
+  readonly action?: string;
+}
+
 export interface AuditRepository {
   append(input: AuditRecordInput): AuditEvent;
-  listRecent(limit?: number): readonly AuditEvent[];
+  list(options?: AuditListOptions): readonly AuditEvent[];
 }
 
 export class SqliteAuditRepository implements AuditRepository {
@@ -128,7 +134,24 @@ export class SqliteAuditRepository implements AuditRepository {
     return event;
   }
 
-  listRecent(limit = 100): readonly AuditEvent[] {
+  list(options: AuditListOptions = {}): readonly AuditEvent[] {
+    const limit = options.limit ?? 100;
+    const filters: string[] = [];
+    const parameters: Array<string | number> = [];
+
+    if (options.pluginId) {
+      filters.push("(resource_id = ? OR metadata_json LIKE ?)");
+      parameters.push(options.pluginId, `%\"pluginId\":\"${options.pluginId}\"%`);
+    }
+
+    if (options.action) {
+      filters.push("action = ?");
+      parameters.push(options.action);
+    }
+
+    const whereClause =
+      filters.length > 0 ? `WHERE ${filters.join(" AND ")}` : "";
+
     return this.database
       .queryAll(
         `
@@ -144,10 +167,11 @@ export class SqliteAuditRepository implements AuditRepository {
             correlation_id,
             metadata_json
           FROM audit_events
+          ${whereClause}
           ORDER BY timestamp DESC, id DESC
           LIMIT ?
         `,
-        [limit]
+        [...parameters, limit]
       )
       .map(mapAuditRow);
   }

@@ -134,6 +134,9 @@ importers:
       '@engineering-os/plugin-runtime':
         specifier: workspace:*
         version: link:../../packages/plugin-runtime
+      '@engineering-os/security':
+        specifier: workspace:*
+        version: link:../../packages/security
 
   packages/config:
     dependencies:
@@ -207,6 +210,9 @@ importers:
       '@engineering-os/plugin-registry':
         specifier: workspace:*
         version: link:../plugin-registry
+      '@engineering-os/security':
+        specifier: workspace:*
+        version: link:../security
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@3.25.76)

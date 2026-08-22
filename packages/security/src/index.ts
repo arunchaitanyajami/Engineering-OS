@@ -23,6 +23,11 @@ export {
   systemSecretReferenceSchema as secretReferenceSchema
 } from "@engineering-os/contracts/unstable-runtime";
 
+export { SecretServiceError } from "./errors.js";
+export { EncryptedFileSecretStore } from "./encrypted-file-secret-store.js";
+export { assertValidSecretKey, assertValidSecretNamespace } from "./namespace.js";
+export { SecretService } from "./secret-service.js";
+
 import { permissionScope } from "@engineering-os/contracts";
 
 export type ConfirmationMode =

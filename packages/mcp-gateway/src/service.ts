@@ -31,7 +31,9 @@ import {
   type ToolExecutionRequest,
   type ToolExecutionResult,
   type ToolAnnotations,
-  type ToolRiskLevel
+  type ToolRiskLevel,
+  type GatewayEnvironmentValue,
+  type SecretStore
 } from "@engineering-os/contracts/unstable-runtime";
 import type { Logger } from "@engineering-os/logger";
 import type { InstalledPlugin } from "@engineering-os/plugin-registry";
@@ -64,6 +66,7 @@ export interface McpGatewayServiceOptions {
   readonly classifyToolRisk?: (
     input: ToolRiskClassificationInput
   ) => ToolRiskLevel;
+  readonly secretStore?: SecretStore;
 }
 
 export interface McpGatewayCapabilityQuery {
@@ -1009,7 +1012,7 @@ export class McpGatewayService {
       const transport = new ManagedStdioClientTransport({
         command: registration.transport.command,
         args: registration.transport.args,
-        env: this.resolveTransportEnvironment(registration),
+        env: await this.resolveTransportEnvironment(registration),
         ...(registration.transport.cwd
           ? { cwd: registration.transport.cwd }
           : {}),
@@ -1528,9 +1531,9 @@ export class McpGatewayService {
     this.discoveryStatuses.set(registrationId, "not-started");
   }
 
-  private resolveTransportEnvironment(
+  private async resolveTransportEnvironment(
     registration: RegisteredMcpServer
-  ): NodeJS.ProcessEnv {
+  ): Promise<NodeJS.ProcessEnv> {
     const environment: NodeJS.ProcessEnv = {};
 
     for (const key of allowlistedEnvironmentKeys) {
@@ -1544,18 +1547,69 @@ export class McpGatewayService {
     for (const [key, value] of Object.entries(
       registration.transport.env ?? {}
     )) {
-      if (typeof value !== "string") {
-        throw new McpGatewayError(
-          "MCP_GATEWAY_SECRET_REFERENCES_UNSUPPORTED",
-          `MCP server '${registration.registrationId}' requires secret resolution, which is not yet available.`,
-          501
-        );
-      }
-
-      environment[key] = value;
+      environment[key] = await this.resolveEnvironmentValue(
+        registration,
+        value
+      );
     }
 
     return environment;
+  }
+
+  private async resolveEnvironmentValue(
+    registration: RegisteredMcpServer,
+    value: GatewayEnvironmentValue
+  ): Promise<string> {
+    if (typeof value === "string") {
+      return value;
+    }
+
+    const secretStore = this.options.secretStore;
+
+    if (!secretStore) {
+      throw new McpGatewayError(
+        "MCP_GATEWAY_SECRET_REFERENCES_UNSUPPORTED",
+        `MCP server '${registration.registrationId}' requires secret resolution, which is not yet available.`,
+        501
+      );
+    }
+
+    if ("namespace" in value) {
+      const resolved = await secretStore.get(value.namespace, value.key);
+
+      if (resolved === null) {
+        throw new McpGatewayError(
+          "MCP_GATEWAY_SECRET_NOT_FOUND",
+          `Secret '${value.namespace}/${value.key}' is not available for MCP server '${registration.registrationId}'.`,
+          404
+        );
+      }
+
+      return resolved;
+    }
+
+    if (registration.source.type !== "plugin") {
+      throw new McpGatewayError(
+        "MCP_GATEWAY_SECRET_REFERENCE_INVALID",
+        `Plugin secret references are not supported for MCP server '${registration.registrationId}'.`,
+        409
+      );
+    }
+
+    const resolved = await secretStore.get(
+      registration.source.pluginId,
+      value.key
+    );
+
+    if (resolved === null) {
+      throw new McpGatewayError(
+        "MCP_GATEWAY_SECRET_NOT_FOUND",
+        `Secret '${registration.source.pluginId}/${value.key}' is not available for MCP server '${registration.registrationId}'.`,
+        404
+      );
+    }
+
+    return resolved;
   }
 
   private attachChildLogging(runtime: ManagedMcpServerRuntime): void {

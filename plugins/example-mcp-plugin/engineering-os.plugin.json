@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "1",
+  "id": "com.engineering-os.example-mcp",
+  "name": "Example MCP Plugin",
+  "version": "0.1.0",
+  "description": "Reference MCP plugin exposing safe local tools for gateway and tool-console validation.",
+  "publisher": {
+    "name": "Engineering OS"
+  },
+  "engines": {
+    "engineeringOs": ">=0.2.0"
+  },
+  "entrypoints": {
+    "backend": "./dist/backend/index.js"
+  },
+  "capabilities": ["mcp-server", "settings"],
+  "permissions": [
+    {
+      "scope": "process.spawn",
+      "reason": "Starts the bundled MCP server process for local reference workflows."
+    },
+    {
+      "scope": "mcp.register-server",
+      "reason": "Registers the plugin-owned MCP server with the application gateway."
+    }
+  ],
+  "mcp": [
+    {
+      "id": "example",
+      "name": "Example MCP Server",
+      "transport": "stdio",
+      "command": "node",
+      "args": ["./dist/mcp/server.js"],
+      "timeoutMs": 10000
+    }
+  ]
+}

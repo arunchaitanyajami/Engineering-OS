@@ -14,6 +14,7 @@ import {
   type InstalledPlugin
 } from "../../services/desktop-backend-client.js";
 import { isDesktopBackendAvailable } from "../../services/desktop-backend-request.js";
+import { pickPluginDirectory } from "../../services/plugin-directory-picker.js";
 
 const pluginStateTone = (
   plugin: InstalledPlugin
@@ -41,6 +42,7 @@ export function PluginsScreen() {
   const [packagePath, setPackagePath] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
   const [isRegistering, setIsRegistering] = useState(false);
+  const [isPickingDirectory, setIsPickingDirectory] = useState(false);
 
   const loadPlugins = useCallback(
     () => desktopBackendClient.listPlugins(),
@@ -70,6 +72,27 @@ export function PluginsScreen() {
       />
     );
   }
+
+  const handleBrowse = async () => {
+    setIsPickingDirectory(true);
+    setActionError(null);
+
+    try {
+      const selectedPath = await pickPluginDirectory();
+
+      if (selectedPath) {
+        setPackagePath(selectedPath);
+      }
+    } catch (browseError) {
+      setActionError(
+        browseError instanceof Error
+          ? browseError.message
+          : "Unable to open the directory picker."
+      );
+    } finally {
+      setIsPickingDirectory(false);
+    }
+  };
 
   const handleRegister = async () => {
     const trimmedPath = packagePath.trim();
@@ -109,13 +132,27 @@ export function PluginsScreen() {
         <PanelCard eyebrow="Install" title="Register local package">
           <label className="form-field">
             <span>Package directory path</span>
-            <input
-              className="app-input"
-              onChange={(event) => setPackagePath(event.target.value)}
-              placeholder="/absolute/path/to/plugin-package"
-              value={packagePath}
-            />
+            <div className="path-input-row">
+              <input
+                className="app-input"
+                onChange={(event) => setPackagePath(event.target.value)}
+                placeholder="/absolute/path/to/plugin-package"
+                value={packagePath}
+              />
+              <Button
+                className="ui-button--ghost"
+                disabled={isPickingDirectory || isRegistering}
+                onClick={() => void handleBrowse()}
+                type="button"
+              >
+                {isPickingDirectory ? "Opening…" : "Browse…"}
+              </Button>
+            </div>
           </label>
+          <p className="ui-muted">
+            Choose a folder containing <code>engineering-os.plugin.json</code>,
+            or paste an absolute path manually.
+          </p>
           {actionError ? <p className="ui-error-text">{actionError}</p> : null}
           <div className="action-row">
             <Button disabled={isRegistering} onClick={() => void handleRegister()}>

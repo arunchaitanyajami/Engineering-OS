@@ -10,6 +10,7 @@ use tauri::Manager;
 
 fn main() {
     let application = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .manage(BackendHostState::default())
         .setup(|app| {

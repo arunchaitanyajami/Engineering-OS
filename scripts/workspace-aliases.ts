@@ -16,11 +16,18 @@ const workspaceAliasEntries = [
     "../packages/plugin-registry/src/index.ts"
   ],
   ["@engineering-os/mcp-gateway", "../packages/mcp-gateway/src/index.ts"],
+  ["@engineering-os/mcp-client", "../packages/mcp-client/src/index.ts"],
+  [
+    "@engineering-os/capability-catalog",
+    "../packages/capability-catalog/src/index.ts"
+  ],
   [
     "@engineering-os/permission-engine",
     "../packages/permission-engine/src/index.ts"
   ],
   ["@engineering-os/plugin-runtime", "../packages/plugin-runtime/src/index.ts"],
+  ["@engineering-os/plugin-sdk", "../packages/plugin-sdk/src/index.ts"],
+  ["@engineering-os/observability", "../packages/observability/src/index.ts"],
   ["@engineering-os/platform", "../packages/platform/src/index.ts"],
   ["@engineering-os/events", "../packages/events/src/index.ts"],
   ["@engineering-os/ui", "../packages/ui/src/index.tsx"],

@@ -6,7 +6,7 @@ module.exports = {
       path: "node_modules"
     },
     includeOnly:
-      "^(apps/[^/]+/(src|tests|src-tauri/src)|apps/[^/]+/(vite|playwright)\\.config\\.ts|packages/[^/]+/(src|tests))",
+      "^(apps/[^/]+/(src|tests|src-tauri/src)|apps/[^/]+/(vite|playwright)\\.config\\.ts|packages/[^/]+/(src|tests)|plugins/[^/]+/(src|tests))",
     exclude: {
       path: "(^|/)(dist|target|coverage|test-results|playwright-report)/"
     }
@@ -68,6 +68,26 @@ module.exports = {
       },
       to: {
         path: "^apps"
+      }
+    },
+    {
+      name: "plugins-do-not-import-apps",
+      severity: "error",
+      from: {
+        path: "^plugins/"
+      },
+      to: {
+        path: "^apps"
+      }
+    },
+    {
+      name: "plugins-only-depend-on-sdk-and-contracts",
+      severity: "error",
+      from: {
+        path: "^plugins/"
+      },
+      to: {
+        path: "^packages/(?!contracts|plugin-sdk)"
       }
     }
   ]

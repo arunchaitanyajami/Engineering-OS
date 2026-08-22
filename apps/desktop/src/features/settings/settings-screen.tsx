@@ -161,19 +161,23 @@ export function SettingsScreen() {
                 Open console
               </Link>
             </div>
+            <div className="summary-list__row">
+              <span>Permissions</span>
+              <Link className="ui-button ui-button--ghost" to="/permissions">
+                Review grants
+              </Link>
+            </div>
           </div>
         </PanelCard>
 
         <PanelCard eyebrow="Future" title="Reserved surfaces">
           <div className="stack-list">
-            {["AI Providers", "Knowledge Storage", "Security and Permissions"].map(
-              (item) => (
-                <div className="summary-list__row" key={item}>
-                  <span>{item}</span>
-                  <Badge tone="warning">Unavailable</Badge>
-                </div>
-              )
-            )}
+            {["AI Providers", "Knowledge Storage"].map((item) => (
+              <div className="summary-list__row" key={item}>
+                <span>{item}</span>
+                <Badge tone="warning">Unavailable</Badge>
+              </div>
+            ))}
           </div>
         </PanelCard>
       </div>

@@ -62,6 +62,11 @@ const ToolTestConsoleScreen = lazy(() =>
     default: module.ToolTestConsoleScreen
   }))
 );
+const PermissionsScreen = lazy(() =>
+  import("../features/permissions/permissions-screen").then((module) => ({
+    default: module.PermissionsScreen
+  }))
+);
 
 const withSuspense = (element: ReactNode) => (
   <Suspense
@@ -120,6 +125,10 @@ const router = createBrowserRouter([
         element: withSuspense(<PluginDetailScreen />)
       },
       {
+        path: "permissions",
+        element: withSuspense(<PermissionsScreen />)
+      },
+      {
         path: "mcp/servers",
         element: withSuspense(<McpServersScreen />)
       },
@@ -160,6 +169,10 @@ const router = createBrowserRouter([
       {
         path: "settings/mcp-servers",
         element: <Navigate replace to="/mcp/servers" />
+      },
+      {
+        path: "settings/permissions",
+        element: <Navigate replace to="/permissions" />
       },
       {
         path: "*",

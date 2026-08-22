@@ -1,0 +1,7 @@
+{
+  "name": "@engineering-os/example-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Reference plugin validating manifest, lifecycle, configuration, secrets, and logging boundaries."
+}

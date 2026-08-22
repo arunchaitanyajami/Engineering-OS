@@ -72,6 +72,16 @@ export const appRouteDefinitions: readonly AppRouteDefinition[] = [
     enabled: true
   },
   {
+    id: "permissions",
+    path: "/permissions",
+    label: "Permissions",
+    title: "Permissions",
+    description: "Review capability grants and pending requirements across installed plugins.",
+    icon: createLetterIcon("R"),
+    navigationGroup: "platform",
+    enabled: true
+  },
+  {
     id: "mcp-servers",
     path: "/mcp/servers",
     label: "MCP Servers",

@@ -1,0 +1,7 @@
+{
+  "name": "@engineering-os/example-mcp-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Reference MCP plugin exposing safe local tools for gateway validation."
+}

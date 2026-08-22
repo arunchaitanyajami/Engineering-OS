@@ -22,7 +22,10 @@ import {
 } from "../stores/application-store";
 
 const routeUsesPrefixMatch = (routeId: string): boolean =>
-  routeId === "sessions" || routeId === "plugins" || routeId === "mcp-servers";
+  routeId === "sessions" ||
+  routeId === "plugins" ||
+  routeId === "permissions" ||
+  routeId === "mcp-servers";
 
 const getCurrentRoute = (pathname: string) =>
   appRouteDefinitions.find((routeDefinition) =>

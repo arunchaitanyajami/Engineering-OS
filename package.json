@@ -30,7 +30,7 @@
     "test:unit": "vitest run --config vitest.config.ts --exclude '**/*.integration.test.ts'",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:e2e": "playwright test",
-    "boundaries:check": "depcruise --config dependency-cruiser.cjs --include-only '^apps|^packages' .",
+    "boundaries:check": "depcruise --config dependency-cruiser.cjs --include-only '^apps|^packages|^plugins' .",
     "deps:check": "pnpm dedupe --check",
     "security:check": "pnpm audit --prod --audit-level high",
     "changeset": "changeset",

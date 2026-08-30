@@ -20,7 +20,8 @@ import { useAsyncResource } from "../../hooks/use-async-resource.js";
 import { desktopBackendClient } from "../../services/desktop-backend-client.js";
 import { isDesktopBackendAvailable } from "../../services/desktop-backend-request.js";
 
-type McpDetailTab = "overview" | "tools" | "resources" | "prompts" | "diagnostics";
+type McpDetailTab =
+  "overview" | "tools" | "resources" | "prompts" | "diagnostics";
 
 export function McpServerDetailScreen() {
   const { registrationId = "" } = useParams();
@@ -42,28 +43,33 @@ export function McpServerDetailScreen() {
     const pluginId =
       server.source.type === "plugin" ? server.source.pluginId : undefined;
 
-    const [healthResponse, toolsResponse, resourcesResponse, promptsResponse, executionsResponse] =
-      await Promise.all([
-        desktopBackendClient.getMcpHealth({
-          ...(pluginId ? { pluginId } : {})
-        }),
-        desktopBackendClient.listMcpTools({
-          serverId: server.serverId,
-          ...(pluginId ? { pluginId } : {})
-        }),
-        desktopBackendClient.listMcpResources({
-          serverId: server.serverId,
-          ...(pluginId ? { pluginId } : {})
-        }),
-        desktopBackendClient.listMcpPrompts({
-          serverId: server.serverId,
-          ...(pluginId ? { pluginId } : {})
-        }),
-        desktopBackendClient.listToolExecutions({
-          limit: 20,
-          serverId: server.serverId
-        })
-      ]);
+    const [
+      healthResponse,
+      toolsResponse,
+      resourcesResponse,
+      promptsResponse,
+      executionsResponse
+    ] = await Promise.all([
+      desktopBackendClient.getMcpHealth({
+        ...(pluginId ? { pluginId } : {})
+      }),
+      desktopBackendClient.listMcpTools({
+        serverId: server.serverId,
+        ...(pluginId ? { pluginId } : {})
+      }),
+      desktopBackendClient.listMcpResources({
+        serverId: server.serverId,
+        ...(pluginId ? { pluginId } : {})
+      }),
+      desktopBackendClient.listMcpPrompts({
+        serverId: server.serverId,
+        ...(pluginId ? { pluginId } : {})
+      }),
+      desktopBackendClient.listToolExecutions({
+        limit: 20,
+        serverId: server.serverId
+      })
+    ]);
 
     return {
       server,
@@ -78,10 +84,9 @@ export function McpServerDetailScreen() {
     };
   }, [decodedRegistrationId]);
 
-  const { data, error, isLoading, reload } = useAsyncResource(
-    loadDetail,
-    [decodedRegistrationId]
-  );
+  const { data, error, isLoading, reload } = useAsyncResource(loadDetail, [
+    decodedRegistrationId
+  ]);
 
   if (!isDesktopBackendAvailable()) {
     return <BackendUnavailableNotice />;
@@ -218,7 +223,9 @@ export function McpServerDetailScreen() {
                 disabled={isBusy}
                 onClick={() =>
                   void runAction(() =>
-                    desktopBackendClient.unregisterMcpServer(decodedRegistrationId)
+                    desktopBackendClient.unregisterMcpServer(
+                      decodedRegistrationId
+                    )
                   )
                 }
               >
@@ -252,7 +259,9 @@ export function McpServerDetailScreen() {
                       {tool.riskLevel}
                     </Badge>
                   </div>
-                  <span className="ui-muted">{tool.description ?? tool.id}</span>
+                  <span className="ui-muted">
+                    {tool.description ?? tool.id}
+                  </span>
                   <Link
                     className="ui-button ui-button--ghost"
                     to={`/mcp/tool-console?toolId=${encodeURIComponent(tool.id)}&serverId=${encodeURIComponent(tool.serverId)}`}
@@ -324,7 +333,9 @@ export function McpServerDetailScreen() {
                     {execution.state} · {execution.startedAt}
                   </span>
                   {execution.result ? (
-                    <pre className="code-block">{formatJson(execution.result)}</pre>
+                    <pre className="code-block">
+                      {formatJson(execution.result)}
+                    </pre>
                   ) : null}
                 </div>
               ))}

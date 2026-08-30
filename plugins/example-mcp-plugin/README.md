@@ -4,12 +4,12 @@ Internal reference plugin for Milestone 2 MCP gateway validation.
 
 ## Tools
 
-| Tool | Description |
-| --- | --- |
-| `echo` | Returns the supplied message unchanged |
+| Tool                         | Description                                                   |
+| ---------------------------- | ------------------------------------------------------------- |
+| `echo`                       | Returns the supplied message unchanged                        |
 | `get_current_workspace_info` | Returns safe process metadata (`cwd`, Node version, platform) |
-| `list_sample_resources` | Lists bundled sample resources |
-| `read_sample_resource` | Reads a sample resource by URI |
+| `list_sample_resources`      | Lists bundled sample resources                                |
+| `read_sample_resource`       | Reads a sample resource by URI                                |
 
 ## Sample resources
 

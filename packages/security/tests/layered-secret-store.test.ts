@@ -61,9 +61,7 @@ describe("LayeredSecretStore", () => {
       }
     };
 
-    const store = new SecretService(
-      new LayeredSecretStore(platform, fallback)
-    );
+    const store = new SecretService(new LayeredSecretStore(platform, fallback));
 
     await store.set("system", "token", "platform-value");
 
@@ -114,9 +112,9 @@ describe("AuditingSecretStore", () => {
       })
     );
 
-    await expect(store.get("com.engineering-os.example", "token")).resolves.toBe(
-      "secret-value"
-    );
+    await expect(
+      store.get("com.engineering-os.example", "token")
+    ).resolves.toBe("secret-value");
     await store.listKeys("com.engineering-os.example");
 
     expect(auditEvents).toEqual([

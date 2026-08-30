@@ -66,7 +66,8 @@ export const appRouteDefinitions: readonly AppRouteDefinition[] = [
     path: "/plugins",
     label: "Plugins",
     title: "Plugins",
-    description: "Install and manage local plugin packages, permissions, and runtime health.",
+    description:
+      "Install and manage local plugin packages, permissions, and runtime health.",
     icon: createLetterIcon("P"),
     navigationGroup: "platform",
     enabled: true
@@ -76,7 +77,8 @@ export const appRouteDefinitions: readonly AppRouteDefinition[] = [
     path: "/permissions",
     label: "Permissions",
     title: "Permissions",
-    description: "Review capability grants and pending requirements across installed plugins.",
+    description:
+      "Review capability grants and pending requirements across installed plugins.",
     icon: createLetterIcon("R"),
     navigationGroup: "platform",
     enabled: true
@@ -86,7 +88,8 @@ export const appRouteDefinitions: readonly AppRouteDefinition[] = [
     path: "/mcp/servers",
     label: "MCP Servers",
     title: "MCP Servers",
-    description: "Register MCP servers, inspect discovered capabilities, and run tool tests.",
+    description:
+      "Register MCP servers, inspect discovered capabilities, and run tool tests.",
     icon: createLetterIcon("M"),
     navigationGroup: "platform",
     enabled: true

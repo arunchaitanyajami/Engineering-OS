@@ -1,4 +1,8 @@
-import type { PluginManifest, PluginPermissionRequest, PermissionScope } from "@engineering-os/contracts";
+import type {
+  PluginManifest,
+  PluginPermissionRequest,
+  PermissionScope
+} from "@engineering-os/contracts";
 import {
   grantPluginPermissionsRequestSchema,
   pluginPermissionGrantInputSchema,
@@ -139,7 +143,8 @@ const approvalModeSatisfiesRequirement = (
 
   if (requiredApproval === "user-confirmation") {
     return (
-      approvalMode === "user-confirmation" || approvalMode === "dual-confirmation"
+      approvalMode === "user-confirmation" ||
+      approvalMode === "dual-confirmation"
     );
   }
 
@@ -166,7 +171,9 @@ export class PermissionEngineService {
     sessionId?: string
   ): PluginPermissionReviewSnapshot {
     const plugin = this.requireInstalledPlugin(pluginId);
-    const requirements = plugin.manifest.permissions.map(toPermissionRequirement);
+    const requirements = plugin.manifest.permissions.map(
+      toPermissionRequirement
+    );
     const grants = this.options.repository.listByPluginId(pluginId);
     const pendingRequirements = requirements.filter(
       (requirement) => !satisfiesRequirement(requirement, grants, sessionId)
@@ -185,7 +192,9 @@ export class PermissionEngineService {
     });
   }
 
-  grantPermissions(request: GrantPluginPermissionsRequest): PluginPermissionReviewSnapshot {
+  grantPermissions(
+    request: GrantPluginPermissionsRequest
+  ): PluginPermissionReviewSnapshot {
     const parsedRequest = grantPluginPermissionsRequestSchema.parse(request);
     this.requireInstalledPlugin(parsedRequest.pluginId);
     const grantedAt = new Date().toISOString();
@@ -460,7 +469,9 @@ export class PermissionEngineService {
     previousManifest: PluginManifest
   ): readonly PersistedPluginPermissionGrant["scope"][] {
     const plugin = this.requireInstalledPlugin(pluginId);
-    const nextRequirements = plugin.manifest.permissions.map(toPermissionRequirement);
+    const nextRequirements = plugin.manifest.permissions.map(
+      toPermissionRequirement
+    );
     const revokedScopes: PersistedPluginPermissionGrant["scope"][] = [];
     const revokedAt = new Date().toISOString();
 
@@ -498,12 +509,15 @@ export class PermissionEngineService {
     }
 
     if (revokedScopes.length > 0) {
-      this.logger.info("Revoked stale plugin permission grants after upgrade.", {
-        pluginId,
-        revokedScopes,
-        previousVersion: previousManifest.version,
-        nextVersion: plugin.manifest.version
-      });
+      this.logger.info(
+        "Revoked stale plugin permission grants after upgrade.",
+        {
+          pluginId,
+          revokedScopes,
+          previousVersion: previousManifest.version,
+          nextVersion: plugin.manifest.version
+        }
+      );
     }
 
     return revokedScopes;
@@ -605,7 +619,8 @@ export class PermissionEngineService {
       );
     }
 
-    const expectedConstraint = serializePermissionConstraint(manifestPermission);
+    const expectedConstraint =
+      serializePermissionConstraint(manifestPermission);
     const grantedConstraint = parsedGrant.constraint ?? expectedConstraint;
 
     if (!constraintsMatch(expectedConstraint, grantedConstraint)) {

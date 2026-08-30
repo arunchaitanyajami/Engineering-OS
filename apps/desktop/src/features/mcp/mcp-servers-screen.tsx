@@ -1,7 +1,13 @@
 import { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { Badge, Button, EmptyState, PageHeader, PanelCard } from "@engineering-os/ui";
+import {
+  Badge,
+  Button,
+  EmptyState,
+  PageHeader,
+  PanelCard
+} from "@engineering-os/ui";
 
 import {
   BackendUnavailableNotice,
@@ -177,7 +183,10 @@ export function McpServersScreen() {
           </label>
           {actionError ? <p className="ui-error-text">{actionError}</p> : null}
           <div className="action-row">
-            <Button disabled={isRegistering} onClick={() => void handleRegister()}>
+            <Button
+              disabled={isRegistering}
+              onClick={() => void handleRegister()}
+            >
               {isRegistering ? "Registering…" : "Register server"}
             </Button>
           </div>
@@ -204,13 +213,18 @@ export function McpServersScreen() {
                   >
                     <div className="list-link-card__header">
                       <strong>{server.name}</strong>
-                      <Badge tone={health ? healthTone(health.healthState) : "neutral"}>
+                      <Badge
+                        tone={
+                          health ? healthTone(health.healthState) : "neutral"
+                        }
+                      >
                         {health?.healthState ?? "unknown"}
                       </Badge>
                     </div>
                     <span className="ui-muted">{server.registrationId}</span>
                     <span className="ui-muted">
-                      {server.source.type} · {server.enabled ? "enabled" : "disabled"}
+                      {server.source.type} ·{" "}
+                      {server.enabled ? "enabled" : "disabled"}
                     </span>
                   </Link>
                 );

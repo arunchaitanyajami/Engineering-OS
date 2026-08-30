@@ -8,7 +8,10 @@ import {
   type AuditEvent,
   type AuditOutcome
 } from "@engineering-os/contracts/unstable-runtime";
-import { ApplicationDatabase, readOptionalString } from "@engineering-os/database";
+import {
+  ApplicationDatabase,
+  readOptionalString
+} from "@engineering-os/database";
 
 const readRequiredString = (value: unknown, fieldName: string): string => {
   if (typeof value !== "string") {
@@ -29,7 +32,9 @@ const redactMetadata = (
     const normalizedKey = key.toLowerCase();
 
     if (
-      redactKeys.some((redactKey) => normalizedKey.includes(redactKey.toLowerCase()))
+      redactKeys.some((redactKey) =>
+        normalizedKey.includes(redactKey.toLowerCase())
+      )
     ) {
       return [key, REDACTED_VALUE];
     }
@@ -141,7 +146,7 @@ export class SqliteAuditRepository implements AuditRepository {
 
     if (options.pluginId) {
       filters.push("(resource_id = ? OR metadata_json LIKE ?)");
-      parameters.push(options.pluginId, `%\"pluginId\":\"${options.pluginId}\"%`);
+      parameters.push(options.pluginId, `%"pluginId":"${options.pluginId}"%`);
     }
 
     if (options.action) {

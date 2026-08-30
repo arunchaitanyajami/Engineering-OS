@@ -105,7 +105,8 @@ export function HomeScreen() {
             <div className="list-note">
               <strong>Plugin management</strong>
               <span className="ui-muted">
-                Install local packages, review permissions, and inspect runtime health.
+                Install local packages, review permissions, and inspect runtime
+                health.
               </span>
             </div>
             <div className="list-note">

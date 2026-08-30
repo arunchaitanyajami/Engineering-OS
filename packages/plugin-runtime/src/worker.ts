@@ -10,7 +10,6 @@ import {
 } from "@engineering-os/contracts";
 import {
   checkPluginPermissionBrokerResponseSchema,
-  invokePluginCapabilityResponseSchema,
   pluginRuntimeBrokerRequestSchema,
   pluginRuntimeHealthSnapshotSchema,
   pluginRuntimeRequestSchema,
@@ -95,10 +94,7 @@ const sendBrokerRequest = async (
     });
 
     try {
-      assertIpcMessageWithinLimit(
-        request,
-        "Plugin runtime broker IPC request"
-      );
+      assertIpcMessageWithinLimit(request, "Plugin runtime broker IPC request");
     } catch (error) {
       clearTimeout(timeout);
       pendingBrokerResponses.delete(request.requestId);
@@ -118,36 +114,37 @@ const sendBrokerRequest = async (
   });
 };
 
-const createConfigurationApi = (): EngineeringOsPluginContext["configuration"] => ({
-  async get<TValue>(key: string): Promise<TValue | null> {
-    if (!state.pluginId) {
-      return null;
+const createConfigurationApi =
+  (): EngineeringOsPluginContext["configuration"] => ({
+    async get<TValue>(key: string): Promise<TValue | null> {
+      if (!state.pluginId) {
+        return null;
+      }
+
+      const response = await sendBrokerRequest(
+        pluginRuntimeBrokerRequestSchema.parse({
+          protocolVersion: pluginRuntimeProtocolVersion,
+          type: "broker-read-configuration",
+          requestId: randomUUID(),
+          pluginId: state.pluginId,
+          key
+        })
+      );
+
+      return readPluginConfigurationBrokerResponseSchema.parse(response)
+        .value as TValue | null;
+    },
+    async set() {
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin configuration persistence")
+      );
+    },
+    async delete() {
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin configuration persistence")
+      );
     }
-
-    const response = await sendBrokerRequest(
-      pluginRuntimeBrokerRequestSchema.parse({
-        protocolVersion: pluginRuntimeProtocolVersion,
-        type: "broker-read-configuration",
-        requestId: randomUUID(),
-        pluginId: state.pluginId,
-        key
-      })
-    );
-
-    return readPluginConfigurationBrokerResponseSchema.parse(response)
-      .value as TValue | null;
-  },
-  async set() {
-    return Promise.reject(
-      createUnsupportedMilestone23Error("Plugin configuration persistence")
-    );
-  },
-  async delete() {
-    return Promise.reject(
-      createUnsupportedMilestone23Error("Plugin configuration persistence")
-    );
-  }
-});
+  });
 
 const createSecretsApi = (): EngineeringOsPluginContext["secrets"] => ({
   async get(key) {

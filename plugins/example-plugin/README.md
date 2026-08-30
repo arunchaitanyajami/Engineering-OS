@@ -22,9 +22,9 @@ Validates:
 
 Optional manifest configuration keys:
 
-| Key | Type | Description |
-| --- | --- | --- |
-| `greeting` | string | Logged during initialization when present |
+| Key               | Type    | Description                                                  |
+| ----------------- | ------- | ------------------------------------------------------------ |
+| `greeting`        | string  | Logged during initialization when present                    |
 | `simulateFailure` | boolean | When true, `activate()` throws to demonstrate error handling |
 
 ## Install locally

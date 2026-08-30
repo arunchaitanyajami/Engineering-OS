@@ -4,33 +4,33 @@ This document maps Milestone 2 section 14 requirements to the repository test su
 
 ## Unit Tests
 
-| Requirement | Primary suite |
-| --- | --- |
-| Manifest validation | `packages/contracts/tests/contracts.test.ts` |
-| Compatibility checks | `packages/plugin-registry/tests/plugin-registry.test.ts` |
-| Permission resolution | `packages/permission-engine/tests/permission-engine.test.ts` |
-| Tool risk policy | `packages/permission-engine/tests/tool-safety.test.ts` |
-| Error normalization | `packages/mcp-gateway/tests/mcp-gateway.test.ts` |
-| Capability mapping | `packages/mcp-gateway/tests/mcp-gateway.test.ts` |
+| Requirement                  | Primary suite                                                                     |
+| ---------------------------- | --------------------------------------------------------------------------------- |
+| Manifest validation          | `packages/contracts/tests/contracts.test.ts`                                      |
+| Compatibility checks         | `packages/plugin-registry/tests/plugin-registry.test.ts`                          |
+| Permission resolution        | `packages/permission-engine/tests/permission-engine.test.ts`                      |
+| Tool risk policy             | `packages/permission-engine/tests/tool-safety.test.ts`                            |
+| Error normalization          | `packages/mcp-gateway/tests/mcp-gateway.test.ts`                                  |
+| Capability mapping           | `packages/mcp-gateway/tests/mcp-gateway.test.ts`                                  |
 | Secret namespace enforcement | `packages/security/tests/*.test.ts`, `packages/contracts/tests/contracts.test.ts` |
-| Lifecycle state transitions | `packages/plugin-runtime/tests/plugin-runtime.test.ts` |
+| Lifecycle state transitions  | `packages/plugin-runtime/tests/plugin-runtime.test.ts`                            |
 
 ## Integration Tests
 
-| Requirement | Primary suite |
-| --- | --- |
-| Install and enable plugin | `apps/desktop-backend/tests/reference-plugins.integration.test.ts` |
-| Reject invalid manifest | `packages/plugin-registry/tests/plugin-registry.test.ts`, `apps/desktop-backend/tests/server.integration.test.ts` |
-| Reject incompatible plugin | `packages/plugin-registry/tests/plugin-registry.test.ts`, `apps/desktop-backend/tests/server.integration.test.ts` |
-| Launch MCP server over stdio | `packages/mcp-gateway/tests/mcp-gateway.test.ts`, `apps/desktop-backend/tests/server.integration.test.ts` |
-| Discover tools | `packages/mcp-gateway/tests/mcp-gateway.test.ts`, `apps/desktop-backend/tests/reference-plugins.integration.test.ts` |
-| Execute tool | `packages/mcp-gateway/tests/mcp-gateway.test.ts`, `apps/desktop-backend/tests/server.integration.test.ts` |
-| Cancel tool execution | `packages/mcp-gateway/tests/mcp-gateway.test.ts`, `apps/desktop-backend/tests/server.integration.test.ts` |
-| Detect startup timeout | `packages/mcp-gateway/tests/mcp-gateway.test.ts` |
-| Handle process crash | `packages/mcp-gateway/tests/mcp-gateway.test.ts`, `packages/plugin-runtime/tests/plugin-runtime.test.ts` |
-| Disable plugin while running | `apps/desktop-backend/tests/plugin-lifecycle-service.integration.test.ts` |
-| Revoke plugin permission | `packages/permission-engine/tests/permission-engine.test.ts` |
-| Prevent unauthorized capability use | `apps/desktop-backend/tests/server.integration.test.ts` (`requires permission grants before enabling MCP plugins`) |
+| Requirement                         | Primary suite                                                                                                        |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Install and enable plugin           | `apps/desktop-backend/tests/reference-plugins.integration.test.ts`                                                   |
+| Reject invalid manifest             | `packages/plugin-registry/tests/plugin-registry.test.ts`, `apps/desktop-backend/tests/server.integration.test.ts`    |
+| Reject incompatible plugin          | `packages/plugin-registry/tests/plugin-registry.test.ts`, `apps/desktop-backend/tests/server.integration.test.ts`    |
+| Launch MCP server over stdio        | `packages/mcp-gateway/tests/mcp-gateway.test.ts`, `apps/desktop-backend/tests/server.integration.test.ts`            |
+| Discover tools                      | `packages/mcp-gateway/tests/mcp-gateway.test.ts`, `apps/desktop-backend/tests/reference-plugins.integration.test.ts` |
+| Execute tool                        | `packages/mcp-gateway/tests/mcp-gateway.test.ts`, `apps/desktop-backend/tests/server.integration.test.ts`            |
+| Cancel tool execution               | `packages/mcp-gateway/tests/mcp-gateway.test.ts`, `apps/desktop-backend/tests/server.integration.test.ts`            |
+| Detect startup timeout              | `packages/mcp-gateway/tests/mcp-gateway.test.ts`                                                                     |
+| Handle process crash                | `packages/mcp-gateway/tests/mcp-gateway.test.ts`, `packages/plugin-runtime/tests/plugin-runtime.test.ts`             |
+| Disable plugin while running        | `apps/desktop-backend/tests/plugin-lifecycle-service.integration.test.ts`                                            |
+| Revoke plugin permission            | `packages/permission-engine/tests/permission-engine.test.ts`                                                         |
+| Prevent unauthorized capability use | `apps/desktop-backend/tests/server.integration.test.ts` (`requires permission grants before enabling MCP plugins`)   |
 
 ## End-to-End Tests
 

@@ -30,10 +30,10 @@ plugins
 
 The milestone specification uses canonical names that map to existing folders:
 
-| Spec name | Folder / package |
-| --- | --- |
+| Spec name        | Folder / package                                 |
+| ---------------- | ------------------------------------------------ |
 | `secure-storage` | `packages/security` (`@engineering-os/security`) |
-| `test-utils` | `packages/testing` (`@engineering-os/testing`) |
+| `test-utils`     | `packages/testing` (`@engineering-os/testing`)   |
 
 ## Enforcement
 

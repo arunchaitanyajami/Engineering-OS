@@ -28,7 +28,8 @@ export const milestone2ReferencePluginPaths = {
   exampleMcp: join(repositoryRootPath, "plugins/example-mcp-plugin")
 } as const;
 
-export type Milestone2ReferencePluginName = keyof typeof milestone2ReferencePluginPaths;
+export type Milestone2ReferencePluginName =
+  keyof typeof milestone2ReferencePluginPaths;
 
 const manifestFileName = "engineering-os.plugin.json";
 
@@ -57,17 +58,14 @@ export const createInitializePluginRequestFixture = (
     type: "initialize-plugin",
     requestId: "contract-fixture-initialize",
     pluginId: manifest.id,
-    installationRootPath:
-      options.installationRootPath ?? "/tmp/example-plugin",
+    installationRootPath: options.installationRootPath ?? "/tmp/example-plugin",
     expectedContentHash:
       options.expectedContentHash ??
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     manifest
   });
 
-export const createActivatePluginRequestFixture = (
-  pluginId: string
-) =>
+export const createActivatePluginRequestFixture = (pluginId: string) =>
   activatePluginRequestSchema.parse({
     protocolVersion: pluginRuntimeProtocolVersion,
     type: "activate-plugin",

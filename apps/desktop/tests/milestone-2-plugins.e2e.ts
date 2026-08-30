@@ -2,10 +2,7 @@ import { join } from "node:path";
 
 import { expect, test } from "@playwright/test";
 
-const exampleMcpPluginPath = join(
-  process.cwd(),
-  "plugins/example-mcp-plugin"
-);
+const exampleMcpPluginPath = join(process.cwd(), "plugins/example-mcp-plugin");
 const exampleMcpPluginId = "com.engineering-os.example-mcp";
 const exampleMcpRegistrationId = `${exampleMcpPluginId}:example`;
 
@@ -36,19 +33,26 @@ test.describe("Milestone 2 plugin management", () => {
       page.getByRole("heading", { name: "Example MCP Plugin" })
     ).toBeVisible();
 
-    await page.locator(".tab-row").getByRole("button", { name: "Permissions" }).click();
+    await page
+      .locator(".tab-row")
+      .getByRole("button", { name: "Permissions" })
+      .click();
     await expect(page.getByText("Pending requirements")).toBeVisible();
-    await page.getByRole("button", { name: "Grant pending permissions" }).click();
-    await expect(
-      page.getByRole("button", { name: "Enable" })
-    ).toBeEnabled();
+    await page
+      .getByRole("button", { name: "Grant pending permissions" })
+      .click();
+    await expect(page.getByRole("button", { name: "Enable" })).toBeEnabled();
 
     await page.getByRole("button", { name: "Enable" }).click();
     await expect(page.getByRole("button", { name: "Disable" })).toBeVisible({
       timeout: 15_000
     });
+    await page
+      .locator(".tab-row")
+      .getByRole("button", { name: "Overview" })
+      .click();
+    await page.getByRole("button", { name: "Start runtime" }).click();
 
-    await page.locator(".tab-row").getByRole("button", { name: "Overview" }).click();
     await page.getByRole("button", { name: "Health" }).click();
     await expect(page.locator(".code-block")).toContainText('"healthy": true', {
       timeout: 15_000
@@ -65,16 +69,20 @@ test.describe("Milestone 2 plugin management", () => {
     await expect(page.getByText("echo")).toBeVisible();
     await expect(page.getByText("get_current_workspace_info")).toBeVisible();
 
+    await page.getByRole("button", { name: "Overview" }).click();
     await page.getByRole("link", { name: "Open tool console" }).click();
     await expect(
       page.getByRole("heading", { name: "MCP Tool Test Console" })
     ).toBeVisible();
-    await page.getByLabel("Discovered tool").selectOption({ label: /\/echo$/ });
+    await page.getByLabel("Discovered tool").selectOption({
+      label: "example/echo"
+    });
     await page
       .getByLabel("Arguments (JSON)")
       .fill(JSON.stringify({ message: "hello from milestone 2 e2e" }));
+    await page.getByLabel("Approval mode").selectOption("user-confirmation");
     await page.getByRole("button", { name: "Execute tool" }).click();
-    await expect(page.locator(".code-block")).toContainText(
+    await expect(page.locator(".code-block").last()).toContainText(
       "hello from milestone 2 e2e",
       { timeout: 15_000 }
     );

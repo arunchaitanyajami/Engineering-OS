@@ -1213,14 +1213,15 @@ describe("McpGatewayService", () => {
       timeoutMs: 10_000
     });
 
-    await expect(gateway.startServer("user:invalid-schema")).rejects.toMatchObject(
-      {
-        code: "MCP_GATEWAY_SERVER_START_FAILED"
-      }
-    );
+    await expect(
+      gateway.startServer("user:invalid-schema")
+    ).rejects.toMatchObject({
+      code: "MCP_GATEWAY_SERVER_START_FAILED"
+    });
     expect(gateway.inspectServerHealth("user:invalid-schema")).toMatchObject({
       discoveryStatus: "failed",
-      lastError: "Tool 'user.invalid-schema.tool.broken_tool' exposes an invalid JSON Schema."
+      lastError:
+        "Tool 'user.invalid-schema.tool.broken_tool' exposes an invalid JSON Schema."
     });
   });
 
@@ -1301,11 +1302,11 @@ describe("McpGatewayService", () => {
       timeoutMs: 10_000
     });
 
-    await expect(gateway.startServer("user:hang-discovery")).rejects.toMatchObject(
-      {
-        code: "MCP_GATEWAY_SERVER_START_FAILED"
-      }
-    );
+    await expect(
+      gateway.startServer("user:hang-discovery")
+    ).rejects.toMatchObject({
+      code: "MCP_GATEWAY_SERVER_START_FAILED"
+    });
     expect(gateway.inspectServerHealth("user:hang-discovery")).toMatchObject({
       discoveryStatus: "failed",
       lastError:
@@ -1394,7 +1395,9 @@ describe("McpGatewayService", () => {
       timeoutMs: 10_000
     });
 
-    await expect(gateway.startServer("user:repeat-cursor")).rejects.toMatchObject({
+    await expect(
+      gateway.startServer("user:repeat-cursor")
+    ).rejects.toMatchObject({
       code: "MCP_GATEWAY_SERVER_START_FAILED",
       cause: expect.objectContaining({
         code: "MCP_GATEWAY_DISCOVERY_CURSOR_REPEATED"
@@ -1896,7 +1899,11 @@ describe("McpGatewayService", () => {
     const installedPlugin =
       await pluginRegistry.registerLocalPluginPackage(packageDirectory);
 
-    await secretStore.set(installedPlugin.pluginId, "api-token", "resolved-token");
+    await secretStore.set(
+      installedPlugin.pluginId,
+      "api-token",
+      "resolved-token"
+    );
     pluginRegistry.enableInstalledPlugin(installedPlugin.pluginId);
 
     await expect(
@@ -1905,7 +1912,9 @@ describe("McpGatewayService", () => {
       healthState: "healthy"
     });
 
-    await gatewayWithSecrets.stopServer("com.engineering-os.mcp-plugin:filesystem");
+    await gatewayWithSecrets.stopServer(
+      "com.engineering-os.mcp-plugin:filesystem"
+    );
   });
 
   it("rejects stdio servers that exit before startup stabilizes", async () => {

@@ -1,8 +1,6 @@
 import { Badge, ErrorState, LoadingState } from "@engineering-os/ui";
 
-import {
-  isDesktopBackendAvailable
-} from "../../services/desktop-backend-request.js";
+import { isDesktopBackendAvailable } from "../../services/desktop-backend-request.js";
 
 export function BackendUnavailableNotice({
   title = "Desktop backend unavailable",

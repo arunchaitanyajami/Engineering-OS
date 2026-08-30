@@ -39,7 +39,9 @@ describe("ManagedStdioClientTransport", () => {
   });
 
   const createScript = async (source: string) => {
-    const directory = await mkdtemp(join(tmpdir(), "engineering-os-transport-"));
+    const directory = await mkdtemp(
+      join(tmpdir(), "engineering-os-transport-")
+    );
     directories.push(directory);
     const scriptPath = join(directory, "index.js");
     await writeFile(scriptPath, source, "utf8");
@@ -113,9 +115,11 @@ describe("ManagedStdioClientTransport", () => {
     await transport.start();
 
     const child = transport.childProcess;
-    const stdin = child?.stdin as (Writable & {
-      write(chunk: string): boolean;
-    }) | null;
+    const stdin = child?.stdin as
+      | (Writable & {
+          write(chunk: string): boolean;
+        })
+      | null;
 
     expect(child).toBeTruthy();
     expect(stdin).toBeTruthy();

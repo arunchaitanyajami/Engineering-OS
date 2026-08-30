@@ -20,11 +20,7 @@ import { desktopBackendClient } from "../../services/desktop-backend-client.js";
 import { isDesktopBackendAvailable } from "../../services/desktop-backend-request.js";
 
 type PluginDetailTab =
-  | "overview"
-  | "permissions"
-  | "configuration"
-  | "health"
-  | "logs";
+  "overview" | "permissions" | "configuration" | "health" | "logs";
 
 export function PluginDetailScreen() {
   const { pluginId = "" } = useParams();
@@ -57,10 +53,9 @@ export function PluginDetailScreen() {
     };
   }, [decodedPluginId]);
 
-  const { data, error, isLoading, reload } = useAsyncResource(
-    loadDetail,
-    [decodedPluginId]
-  );
+  const { data, error, isLoading, reload } = useAsyncResource(loadDetail, [
+    decodedPluginId
+  ]);
 
   const pendingScopes = useMemo(
     () => new Set(data?.review.pendingRequirements.map((item) => item.scope)),
@@ -142,7 +137,9 @@ export function PluginDetailScreen() {
     const key = configurationKey.trim();
 
     if (!key) {
-      setActionError("Enter a configuration key to read from the plugin runtime.");
+      setActionError(
+        "Enter a configuration key to read from the plugin runtime."
+      );
       return;
     }
 
@@ -304,7 +301,10 @@ export function PluginDetailScreen() {
             </div>
             {review.pendingRequirements.length > 0 ? (
               <div className="action-row">
-                <Button disabled={isBusy} onClick={() => void grantPendingPermissions()}>
+                <Button
+                  disabled={isBusy}
+                  onClick={() => void grantPendingPermissions()}
+                >
                   Grant pending permissions
                 </Button>
               </div>

@@ -339,32 +339,47 @@ const asPublicError = (
       ? new BackendPublicError(error.code, error.message, error.statusCode, {
           cause: error.cause ?? error
         })
-    : error instanceof McpUserRegistrationStoreError
-      ? new BackendPublicError(error.code, error.message, error.statusCode, {
-          cause: error.cause ?? error
-        })
-      : error instanceof PluginRuntimeError
+      : error instanceof McpUserRegistrationStoreError
         ? new BackendPublicError(error.code, error.message, error.statusCode, {
             cause: error.cause ?? error
           })
-      : error instanceof PermissionEngineError
-        ? new BackendPublicError(error.code, error.message, error.statusCode, {
-            cause: error.cause ?? error
-          })
-        : error instanceof SecretServiceError
-          ? new BackendPublicError(error.code, error.message, error.statusCode, {
-              cause: error.cause ?? error
-            })
-        : error instanceof BackendPublicError
-          ? error
-          : new BackendPublicError(
-              fallbackCode,
-              fallbackMessage,
-              fallbackStatusCode,
+        : error instanceof PluginRuntimeError
+          ? new BackendPublicError(
+              error.code,
+              error.message,
+              error.statusCode,
               {
-                cause: error
+                cause: error.cause ?? error
               }
-            );
+            )
+          : error instanceof PermissionEngineError
+            ? new BackendPublicError(
+                error.code,
+                error.message,
+                error.statusCode,
+                {
+                  cause: error.cause ?? error
+                }
+              )
+            : error instanceof SecretServiceError
+              ? new BackendPublicError(
+                  error.code,
+                  error.message,
+                  error.statusCode,
+                  {
+                    cause: error.cause ?? error
+                  }
+                )
+              : error instanceof BackendPublicError
+                ? error
+                : new BackendPublicError(
+                    fallbackCode,
+                    fallbackMessage,
+                    fallbackStatusCode,
+                    {
+                      cause: error
+                    }
+                  );
 
 const atomicWriteFile = async (
   path: string,
@@ -923,13 +938,10 @@ export const createBackendContext = async (
   };
 };
 
-const resolveCatalogTool = (
-  context: BackendContext,
-  toolId: string
-) => {
-  const tool = context.mcpGateway.getCatalog().tools.find(
-    (candidate) => candidate.id === toolId
-  );
+const resolveCatalogTool = (context: BackendContext, toolId: string) => {
+  const tool = context.mcpGateway
+    .getCatalog()
+    .tools.find((candidate) => candidate.id === toolId);
 
   if (!tool) {
     throw new BackendPublicError(
@@ -1304,9 +1316,8 @@ export const createDesktopBackendHandler =
 
         validatePluginPackagePath(packagePath);
         writeJson(response, {
-          package: await context.pluginRegistry.inspectLocalPluginPackage(
-            packagePath
-          )
+          package:
+            await context.pluginRegistry.inspectLocalPluginPackage(packagePath)
         });
         return;
       }
@@ -1443,7 +1454,10 @@ export const createDesktopBackendHandler =
         return;
       }
 
-      if (request.method === "GET" && requestUrl.pathname === "/mcp/tool-policies") {
+      if (
+        request.method === "GET" &&
+        requestUrl.pathname === "/mcp/tool-policies"
+      ) {
         const toolId = requestUrl.searchParams.get("toolId")?.trim();
 
         if (toolId) {
@@ -1692,9 +1706,8 @@ export const createDesktopBackendHandler =
           "MCP gateway request is invalid."
         );
 
-        const serverHealth = context.mcpGateway.inspectServerHealth(
-          registrationId
-        );
+        const serverHealth =
+          context.mcpGateway.inspectServerHealth(registrationId);
         writeJson(response, {
           server:
             serverHealth.source.type === "plugin"
@@ -1719,9 +1732,8 @@ export const createDesktopBackendHandler =
           "MCP gateway request is invalid."
         );
 
-        const serverHealth = context.mcpGateway.inspectServerHealth(
-          registrationId
-        );
+        const serverHealth =
+          context.mcpGateway.inspectServerHealth(registrationId);
         writeJson(response, {
           server:
             serverHealth.source.type === "plugin"

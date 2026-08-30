@@ -91,7 +91,9 @@ export class FileMcpUserRegistrationStore implements McpUserRegistrationStore {
         JSON.parse(contents)
       );
 
-      parsedDocument.registrations.forEach(assertSafePersistedEnvironmentValues);
+      parsedDocument.registrations.forEach(
+        assertSafePersistedEnvironmentValues
+      );
       return parsedDocument.registrations;
     } catch (error) {
       if (

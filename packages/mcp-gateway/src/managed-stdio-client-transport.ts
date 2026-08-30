@@ -162,7 +162,9 @@ export class ManagedStdioClientTransport implements Transport {
     await new Promise<void>((resolve, reject) => {
       const serializedMessage = `${JSON.stringify(message)}\n`;
 
-      if (Buffer.byteLength(serializedMessage, "utf8") > MAX_MCP_MESSAGE_BYTES) {
+      if (
+        Buffer.byteLength(serializedMessage, "utf8") > MAX_MCP_MESSAGE_BYTES
+      ) {
         reject(
           new ManagedStdioTransportError(
             "MCP_GATEWAY_MESSAGE_TOO_LARGE",
@@ -180,9 +182,7 @@ export class ManagedStdioClientTransport implements Transport {
 
         settled = true;
         cleanup();
-        reject(
-          error instanceof Error ? error : new Error(String(error))
-        );
+        reject(error instanceof Error ? error : new Error(String(error)));
       };
       const succeed = () => {
         if (settled) {
@@ -279,9 +279,7 @@ export class ManagedStdioClientTransport implements Transport {
     this.onerror?.(error);
     void this.close().catch((closeError) => {
       this.onerror?.(
-        closeError instanceof Error
-          ? closeError
-          : new Error(String(closeError))
+        closeError instanceof Error ? closeError : new Error(String(closeError))
       );
     });
   }

@@ -24,7 +24,10 @@ export {
 } from "@engineering-os/contracts/unstable-runtime";
 
 export { SecretServiceError } from "./errors.js";
-export { assertValidSecretKey, assertValidSecretNamespace } from "./namespace.js";
+export {
+  assertValidSecretKey,
+  assertValidSecretNamespace
+} from "./namespace.js";
 export {
   findLiteralSecretEnvironmentViolations,
   isSensitiveEnvironmentKey
@@ -33,9 +36,7 @@ export {
 import { permissionScope } from "@engineering-os/contracts";
 
 export type ConfirmationMode =
-  | "none"
-  | "user-confirmation"
-  | "dual-confirmation";
+  "none" | "user-confirmation" | "dual-confirmation";
 
 export interface ConfirmationPolicy {
   readonly mode: ConfirmationMode;

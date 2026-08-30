@@ -103,10 +103,12 @@ describe("ToolSafetyService", () => {
       })
     ).toBe("read-only");
 
-    expect(toolSafety.getPolicyReview({
-      id: toolId,
-      name: "create_jira_comment"
-    })).toMatchObject({
+    expect(
+      toolSafety.getPolicyReview({
+        id: toolId,
+        name: "create_jira_comment"
+      })
+    ).toMatchObject({
       effectiveRiskLevel: "read-only",
       source: "manual",
       inferredRiskLevel: "write"

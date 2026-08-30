@@ -634,9 +634,7 @@ describe("PluginRuntimeService", () => {
   });
 
   it("reads plugin configuration through the typed runtime RPC boundary", async () => {
-    const configurationValues = new Map<string, unknown>([
-      ["theme", "dark"]
-    ]);
+    const configurationValues = new Map<string, unknown>([["theme", "dark"]]);
     const { fixturesDirectory, registry, runtime } = await createRuntime({
       configurationBroker: {
         getConfiguration: ({ key }) => configurationValues.get(key) ?? null

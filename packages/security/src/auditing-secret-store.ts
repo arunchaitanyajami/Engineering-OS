@@ -1,10 +1,7 @@
 import type { SecretStore } from "@engineering-os/contracts/unstable-runtime";
 
 export type SecretAuditAction =
-  | "secret.read"
-  | "secret.write"
-  | "secret.delete"
-  | "secret.list";
+  "secret.read" | "secret.write" | "secret.delete" | "secret.list";
 
 export type SecretAuditOutcome = "success" | "failure";
 

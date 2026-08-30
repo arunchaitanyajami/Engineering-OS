@@ -21,7 +21,9 @@ export interface ApplicationSecretStoreOptions {
 const createStoreStack = async (
   options: ApplicationSecretStoreOptions
 ): Promise<SecretStore> => {
-  const fallback = await EncryptedFileSecretStore.open(options.secretsDirectory);
+  const fallback = await EncryptedFileSecretStore.open(
+    options.secretsDirectory
+  );
   const platform = options.platform ?? new UnavailablePlatformSecretStore();
   const layered = new LayeredSecretStore(platform, fallback);
 
@@ -34,5 +36,4 @@ const createStoreStack = async (
 
 export const createApplicationSecretStore = async (
   options: ApplicationSecretStoreOptions
-): Promise<SecretService> =>
-  new SecretService(await createStoreStack(options));
+): Promise<SecretService> => new SecretService(await createStoreStack(options));

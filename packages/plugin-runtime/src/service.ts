@@ -3,7 +3,10 @@ import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
-import { permissionScope, type PermissionScope } from "@engineering-os/contracts";
+import {
+  permissionScope,
+  type PermissionScope
+} from "@engineering-os/contracts";
 import {
   activatePluginRequestSchema,
   healthCheckRequestSchema,
@@ -1014,11 +1017,7 @@ export class PluginRuntimeService {
             return;
           }
 
-          await secretStore.set(
-            request.pluginId,
-            request.key,
-            request.value
-          );
+          await secretStore.set(request.pluginId, request.key, request.value);
 
           runtime.child.send(
             rpcResponseSchema.parse({
@@ -1351,7 +1350,9 @@ export class PluginRuntimeService {
         reject(
           new PluginRuntimeError(
             "PLUGIN_RUNTIME_MESSAGE_TOO_LARGE",
-            error instanceof Error ? error.message : "IPC message is too large.",
+            error instanceof Error
+              ? error.message
+              : "IPC message is too large.",
             413,
             error
           )

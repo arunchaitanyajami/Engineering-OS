@@ -2543,8 +2543,8 @@ describe("desktop backend server", () => {
     const toolsPayload = (await toolsResponse.json()) as {
       tools: Array<{ id: string; riskLevel: string }>;
     };
-    const readWorkspaceTool = toolsPayload.tools.find(
-      (tool) => tool.id.endsWith(".tool.read_workspace")
+    const readWorkspaceTool = toolsPayload.tools.find((tool) =>
+      tool.id.endsWith(".tool.read_workspace")
     );
 
     expect(readWorkspaceTool?.riskLevel).toBe("read-only");
@@ -2552,16 +2552,19 @@ describe("desktop backend server", () => {
     const toolId = readWorkspaceTool?.id;
     expect(toolId).toBeTruthy();
 
-    const overrideResponse = await fetch(`${runtime.baseUrl}/mcp/tool-policies`, {
-      method: "PUT",
-      headers: authenticatedHeaders({
-        "content-type": "application/json"
-      }),
-      body: JSON.stringify({
-        toolId,
-        riskLevel: "privileged"
-      })
-    });
+    const overrideResponse = await fetch(
+      `${runtime.baseUrl}/mcp/tool-policies`,
+      {
+        method: "PUT",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({
+          toolId,
+          riskLevel: "privileged"
+        })
+      }
+    );
 
     expect(overrideResponse.status).toBe(200);
     await expect(overrideResponse.json()).resolves.toMatchObject({

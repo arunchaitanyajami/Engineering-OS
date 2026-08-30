@@ -34,10 +34,10 @@ packages/
 
 The milestone specification uses a few canonical names that differ from package folder names:
 
-| Milestone name | Package |
-| --- | --- |
+| Milestone name   | Package                    |
+| ---------------- | -------------------------- |
 | `secure-storage` | `@engineering-os/security` |
-| `test-utils` | `@engineering-os/testing` |
+| `test-utils`     | `@engineering-os/testing`  |
 
 ## Boundaries
 

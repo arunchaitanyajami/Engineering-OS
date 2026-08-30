@@ -26,7 +26,10 @@ import { PluginLifecycleService } from "../src/plugin-lifecycle-service.js";
 
 const projectRootPath = fileURLToPath(new URL("../../..", import.meta.url));
 const examplePluginPath = join(projectRootPath, "plugins/example-plugin");
-const exampleMcpPluginPath = join(projectRootPath, "plugins/example-mcp-plugin");
+const exampleMcpPluginPath = join(
+  projectRootPath,
+  "plugins/example-mcp-plugin"
+);
 
 describe("Reference plugins", () => {
   const databases: ApplicationDatabase[] = [];
@@ -101,7 +104,8 @@ describe("Reference plugins", () => {
       },
       restartBackoffMs: 50,
       permissionBroker: {
-        checkPermission: (input) => permissionEngine.checkPluginPermission(input),
+        checkPermission: (input) =>
+          permissionEngine.checkPluginPermission(input),
         requestPermission: (input) =>
           permissionEngine.requestPluginPermission(input)
       },
@@ -153,8 +157,12 @@ describe("Reference plugins", () => {
   };
 
   it("installs and runs the bundled example plugin", async () => {
-    const { pluginRegistry, pluginRuntime, pluginLifecycle, grantAllPermissions } =
-      await createServices();
+    const {
+      pluginRegistry,
+      pluginRuntime,
+      pluginLifecycle,
+      grantAllPermissions
+    } = await createServices();
 
     const installedPlugin =
       await pluginRegistry.registerLocalPluginPackage(examplePluginPath);
@@ -165,23 +173,19 @@ describe("Reference plugins", () => {
     await pluginLifecycle.enablePlugin(installedPlugin.pluginId);
     await pluginLifecycle.startPlugin(installedPlugin.pluginId);
 
-    expect(pluginRuntime.getRuntimeHealth(installedPlugin.pluginId)).toMatchObject(
-      {
-        status: "running",
-        healthy: true
-      }
-    );
+    expect(
+      pluginRuntime.getRuntimeHealth(installedPlugin.pluginId)
+    ).toMatchObject({
+      status: "running",
+      healthy: true
+    });
 
     await pluginLifecycle.stopPlugin(installedPlugin.pluginId);
   });
 
   it("discovers and executes tools from the bundled example MCP plugin", async () => {
-    const {
-      mcpGateway,
-      pluginRegistry,
-      pluginLifecycle,
-      grantAllPermissions
-    } = await createServices();
+    const { mcpGateway, pluginRegistry, pluginLifecycle, grantAllPermissions } =
+      await createServices();
 
     const installedPlugin =
       await pluginRegistry.registerLocalPluginPackage(exampleMcpPluginPath);
@@ -207,8 +211,9 @@ describe("Reference plugins", () => {
     ]);
     expect(capabilities.resources.length).toBeGreaterThan(0);
 
-    const echoToolId = capabilities.tools.find((tool) => tool.name === "echo")
-      ?.id;
+    const echoToolId = capabilities.tools.find(
+      (tool) => tool.name === "echo"
+    )?.id;
     expect(echoToolId).toBeTruthy();
 
     await expect(

@@ -70,13 +70,16 @@ const waitForBackendReady = (child) =>
     child.stdout?.on("data", handleOutput);
     child.stderr?.on("data", handleOutput);
     child.on("exit", (code) => {
-      rejectReady(new Error(`Desktop backend exited before becoming ready (${code}).`));
+      rejectReady(
+        new Error(`Desktop backend exited before becoming ready (${code}).`)
+      );
     });
   });
 
 const startE2eDesktopEnv = async () => {
   const frontendHost = process.env.FRONTEND_HOST ?? DEFAULT_FRONTEND_HOST;
-  const backendHost = process.env.EOS_DESKTOP_BACKEND_HOST ?? DEFAULT_BACKEND_HOST;
+  const backendHost =
+    process.env.EOS_DESKTOP_BACKEND_HOST ?? DEFAULT_BACKEND_HOST;
   const frontendPort = process.env.FRONTEND_PORT ?? DEFAULT_FRONTEND_PORT;
   const backendPort = await resolveFreePort(backendHost);
   const backendAuthToken = randomBytes(32).toString("hex");

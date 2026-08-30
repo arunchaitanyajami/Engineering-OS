@@ -460,8 +460,7 @@ export class McpGatewayService {
       options.startupStabilityPeriodMs ?? DEFAULT_STARTUP_STABILITY_PERIOD_MS;
     this.shutdownGracePeriodMs =
       options.shutdownGracePeriodMs ?? DEFAULT_SHUTDOWN_GRACE_PERIOD_MS;
-    this.restartWindowMs =
-      options.restartWindowMs ?? DEFAULT_RESTART_WINDOW_MS;
+    this.restartWindowMs = options.restartWindowMs ?? DEFAULT_RESTART_WINDOW_MS;
     this.maxRestartsPerWindow =
       options.maxRestartsPerWindow ?? DEFAULT_MAX_RESTARTS_PER_WINDOW;
     this.restartBackoffMs =
@@ -577,9 +576,11 @@ export class McpGatewayService {
   getCatalog(options: McpGatewayCapabilityQuery = {}): McpCatalogSnapshot {
     const relevantServers = this.listServerHealth(
       options.pluginId ? { pluginId: options.pluginId } : {}
-    ).filter((server) =>
-      options.serverId ? server.serverId === options.serverId : true
-    );
+    )
+      .filter((server) => server.enabled)
+      .filter((server) =>
+        options.serverId ? server.serverId === options.serverId : true
+      );
     const catalog = mcpCatalogSnapshotSchema.parse({
       tools: relevantServers.flatMap((server) => server.catalog.tools),
       resources: relevantServers.flatMap((server) => server.catalog.resources),
@@ -990,99 +991,99 @@ export class McpGatewayService {
   private async startServerInternal(
     registrationId: string
   ): Promise<McpServerHealthSnapshot> {
+    this.throwIfDisposing();
+    const registration = this.requireRegisteredServer(registrationId);
+
+    if (!registration.enabled) {
+      throw new McpGatewayError(
+        "MCP_GATEWAY_SERVER_DISABLED",
+        `MCP server '${registrationId}' is disabled.`,
+        409
+      );
+    }
+
+    if (this.runtimes.has(registrationId)) {
+      throw new McpGatewayError(
+        "MCP_GATEWAY_SERVER_ALREADY_RUNNING",
+        `MCP server '${registrationId}' is already running.`,
+        409
+      );
+    }
+
+    const transport = new ManagedStdioClientTransport({
+      command: registration.transport.command,
+      args: registration.transport.args,
+      env: await this.resolveTransportEnvironment(registration),
+      ...(registration.transport.cwd
+        ? { cwd: registration.transport.cwd }
+        : {}),
+      shutdownGracePeriodMs: this.shutdownGracePeriodMs
+    });
+    const runtime: ManagedMcpServerRuntime = {
+      registrationId,
+      transport,
+      client: new Client(MCP_GATEWAY_CLIENT_INFO, {
+        capabilities: {}
+      }),
+      logger: this.logger.child({
+        component: "mcp-gateway-child",
+        correlationId: registrationId
+      }),
+      expectedExit: false
+    };
+
+    this.attachChildLogging(runtime);
+    transport.onerror = (error) => {
+      this.handleRuntimeFailure(runtime, error);
+    };
+    const startupDeadline = this.createStartupDeadline(registrationId);
+
+    try {
+      await runtime.client.connect(runtime.transport, {
+        signal: startupDeadline.signal,
+        timeout: startupDeadline.remainingMs()
+      });
+      await this.discoverCapabilities(runtime, registration, startupDeadline);
+      await this.waitForChildStability(
+        runtime,
+        this.startupStabilityPeriodMs,
+        startupDeadline.signal
+      );
       this.throwIfDisposing();
-      const registration = this.requireRegisteredServer(registrationId);
+      this.runtimes.set(registrationId, runtime);
+      const child = runtime.transport.childProcess;
 
-      if (!registration.enabled) {
-        throw new McpGatewayError(
-          "MCP_GATEWAY_SERVER_DISABLED",
-          `MCP server '${registrationId}' is disabled.`,
-          409
-        );
-      }
-
-      if (this.runtimes.has(registrationId)) {
-        throw new McpGatewayError(
-          "MCP_GATEWAY_SERVER_ALREADY_RUNNING",
-          `MCP server '${registrationId}' is already running.`,
-          409
-        );
-      }
-
-      const transport = new ManagedStdioClientTransport({
-        command: registration.transport.command,
-        args: registration.transport.args,
-        env: await this.resolveTransportEnvironment(registration),
-        ...(registration.transport.cwd
-          ? { cwd: registration.transport.cwd }
-          : {}),
-        shutdownGracePeriodMs: this.shutdownGracePeriodMs
-      });
-      const runtime: ManagedMcpServerRuntime = {
-        registrationId,
-        transport,
-        client: new Client(MCP_GATEWAY_CLIENT_INFO, {
-          capabilities: {}
-        }),
-        logger: this.logger.child({
-          component: "mcp-gateway-child",
-          correlationId: registrationId
-        }),
-        expectedExit: false
-      };
-
-      this.attachChildLogging(runtime);
-      transport.onerror = (error) => {
-        this.handleRuntimeFailure(runtime, error);
-      };
-      const startupDeadline = this.createStartupDeadline(registrationId);
-
-      try {
-        await runtime.client.connect(runtime.transport, {
-          signal: startupDeadline.signal,
-          timeout: startupDeadline.remainingMs()
+      if (child) {
+        child.once("exit", (code, signal) => {
+          this.handleChildExit(runtime, code, signal);
         });
-        await this.discoverCapabilities(runtime, registration, startupDeadline);
-        await this.waitForChildStability(
-          runtime,
-          this.startupStabilityPeriodMs,
-          startupDeadline.signal
-        );
-        this.throwIfDisposing();
-        this.runtimes.set(registrationId, runtime);
-        const child = runtime.transport.childProcess;
-
-        if (child) {
-          child.once("exit", (code, signal) => {
-            this.handleChildExit(runtime, code, signal);
-          });
-        }
-
-        this.lastErrors.delete(registrationId);
-      } catch (error) {
-        await this.safeCloseTransport(runtime);
-        this.setCatalog(registrationId, createEmptyCatalog());
-        this.discoveryStatuses.set(registrationId, "failed");
-        this.lastErrors.set(
-          registrationId,
-          this.toStartupErrorMessage(registrationId, error)
-        );
-        throw new McpGatewayError(
-          "MCP_GATEWAY_SERVER_START_FAILED",
-          `MCP server '${registrationId}' failed to start.`,
-          502,
-          error
-        );
-      } finally {
-        startupDeadline.dispose();
       }
 
-      runtime.logger.info("Started MCP stdio server.", {
+      this.lastErrors.delete(registrationId);
+    } catch (error) {
+      await this.safeCloseTransport(runtime);
+      this.setCatalog(registrationId, createEmptyCatalog());
+      this.discoveryStatuses.set(registrationId, "failed");
+      this.lastErrors.set(
         registrationId,
-        pid: runtime.transport.pid
-      });
+        this.toStartupErrorMessage(registrationId, error)
+      );
+      throw new McpGatewayError(
+        "MCP_GATEWAY_SERVER_START_FAILED",
+        `MCP server '${registrationId}' failed to start.`,
+        502,
+        error
+      );
+    } finally {
+      startupDeadline.dispose();
+    }
 
-      return this.inspectServerHealth(registrationId);
+    runtime.logger.info("Started MCP stdio server.", {
+      registrationId,
+      pid: runtime.transport.pid
+    });
+
+    return this.inspectServerHealth(registrationId);
   }
 
   async stopServer(registrationId: string): Promise<McpServerHealthSnapshot> {
@@ -1233,8 +1234,7 @@ export class McpGatewayService {
           throw this.createStartupTimeoutError(registrationId);
         }
 
-        const remainingMs =
-          this.startupTimeoutMs - (Date.now() - startedAt);
+        const remainingMs = this.startupTimeoutMs - (Date.now() - startedAt);
 
         if (remainingMs <= 0) {
           throw this.createStartupTimeoutError(registrationId);
@@ -1722,10 +1722,7 @@ export class McpGatewayService {
           this.discoveryStatuses.set(registrationId, "failed");
         }
       }).catch((restartError) => {
-        this.lastErrors.set(
-          registrationId,
-          this.toErrorMessage(restartError)
-        );
+        this.lastErrors.set(registrationId, this.toErrorMessage(restartError));
         this.discoveryStatuses.set(registrationId, "failed");
       });
     }, this.restartBackoffMs);
@@ -2120,7 +2117,10 @@ export class McpGatewayService {
     registration: RegisteredMcpServer,
     resource: McpListedResource
   ): ResourceDescriptor {
-    const normalizedResource = normalizeResourceDescriptor(registration, resource);
+    const normalizedResource = normalizeResourceDescriptor(
+      registration,
+      resource
+    );
 
     try {
       return resourceDescriptorSchema.parse(normalizedResource);
@@ -2156,9 +2156,7 @@ export class McpGatewayService {
     }
   }
 
-  private normalizeDiscoveryValidationIssues(
-    error: ZodError
-  ): readonly {
+  private normalizeDiscoveryValidationIssues(error: ZodError): readonly {
     readonly path: string;
     readonly message: string;
   }[] {
@@ -2176,7 +2174,10 @@ export class McpGatewayService {
       return error;
     }
 
-    const schemaError = this.createToolSchemaDiscoveryError(registration, error);
+    const schemaError = this.createToolSchemaDiscoveryError(
+      registration,
+      error
+    );
 
     if (schemaError) {
       return schemaError;
@@ -2216,7 +2217,9 @@ export class McpGatewayService {
     );
   }
 
-  private readValidationIssues(error: unknown): readonly ParsedValidationIssue[] | null {
+  private readValidationIssues(
+    error: unknown
+  ): readonly ParsedValidationIssue[] | null {
     if (error instanceof ZodError) {
       return error.issues;
     }
@@ -2314,7 +2317,10 @@ export class McpGatewayService {
     );
 
     if (registration) {
-      const schemaError = this.createToolSchemaDiscoveryError(registration, error);
+      const schemaError = this.createToolSchemaDiscoveryError(
+        registration,
+        error
+      );
 
       if (schemaError) {
         return schemaError.message;

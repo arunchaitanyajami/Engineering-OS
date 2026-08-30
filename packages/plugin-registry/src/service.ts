@@ -585,9 +585,7 @@ export class PluginRegistryService {
     );
   }
 
-  async upgradeLocalPluginPackage(
-    localPackagePath: string
-  ): Promise<{
+  async upgradeLocalPluginPackage(localPackagePath: string): Promise<{
     readonly plugin: InstalledPlugin;
     readonly previousManifest: PluginManifest;
   }> {

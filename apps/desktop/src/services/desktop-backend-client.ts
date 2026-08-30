@@ -46,9 +46,7 @@ export interface InspectedPluginPackage {
   readonly manifest: PluginManifest;
 }
 
-const buildQuery = (
-  parameters: Record<string, string | undefined>
-): string => {
+const buildQuery = (parameters: Record<string, string | undefined>): string => {
   const search = new URLSearchParams();
 
   for (const [key, value] of Object.entries(parameters)) {
@@ -66,12 +64,8 @@ export class DesktopBackendClient {
     return requestDesktopBackend("/plugins");
   }
 
-  getPlugin(
-    pluginId: string
-  ): Promise<{ readonly plugin: InstalledPlugin }> {
-    return requestDesktopBackend(
-      `/plugins${buildQuery({ pluginId })}`
-    );
+  getPlugin(pluginId: string): Promise<{ readonly plugin: InstalledPlugin }> {
+    return requestDesktopBackend(`/plugins${buildQuery({ pluginId })}`);
   }
 
   inspectLocalPlugin(
@@ -124,9 +118,7 @@ export class DesktopBackendClient {
   getPluginRuntime(
     pluginId: string
   ): Promise<{ readonly runtime: PluginRuntimeHealthSnapshot | null }> {
-    return requestDesktopBackend(
-      `/plugins/runtime${buildQuery({ pluginId })}`
-    );
+    return requestDesktopBackend(`/plugins/runtime${buildQuery({ pluginId })}`);
   }
 
   startPluginRuntime(

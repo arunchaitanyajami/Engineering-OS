@@ -37,9 +37,7 @@ export const useAsyncResource = <T>(
         if (!cancelled) {
           setData(null);
           setError(
-            loadError instanceof Error
-              ? loadError.message
-              : "Request failed."
+            loadError instanceof Error ? loadError.message : "Request failed."
           );
         }
       } finally {

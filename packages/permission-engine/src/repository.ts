@@ -23,7 +23,10 @@ const readRequiredString = (value: unknown, fieldName: string): string => {
 const mapGrantRow = (
   row: Record<string, unknown>
 ): PersistedPluginPermissionGrant => {
-  const constraintJson = readOptionalString(row.constraint_json, "constraint_json");
+  const constraintJson = readOptionalString(
+    row.constraint_json,
+    "constraint_json"
+  );
   const revokedAt = readOptionalString(row.revoked_at, "revoked_at");
 
   return persistedPluginPermissionGrantSchema.parse({

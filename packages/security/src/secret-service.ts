@@ -1,6 +1,9 @@
 import type { SecretStore } from "@engineering-os/contracts/unstable-runtime";
 
-import { assertValidSecretKey, assertValidSecretNamespace } from "./namespace.js";
+import {
+  assertValidSecretKey,
+  assertValidSecretNamespace
+} from "./namespace.js";
 
 export class SecretService implements SecretStore {
   constructor(private readonly store: SecretStore) {}

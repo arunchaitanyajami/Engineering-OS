@@ -11,11 +11,11 @@ Documentation for Model Context Protocol integration in Engineering OS.
 
 ## Packages
 
-| Package | Responsibility |
-| --- | --- |
-| `@engineering-os/mcp-gateway` | Server registration, discovery, execution, and policy enforcement |
-| `@engineering-os/mcp-client` | Client session and connection abstractions |
-| `@engineering-os/capability-catalog` | Normalized tool, resource, and prompt catalog types |
+| Package                              | Responsibility                                                    |
+| ------------------------------------ | ----------------------------------------------------------------- |
+| `@engineering-os/mcp-gateway`        | Server registration, discovery, execution, and policy enforcement |
+| `@engineering-os/mcp-client`         | Client session and connection abstractions                        |
+| `@engineering-os/capability-catalog` | Normalized tool, resource, and prompt catalog types               |
 
 ## Reference plugin
 

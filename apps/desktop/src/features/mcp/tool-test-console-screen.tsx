@@ -44,10 +44,12 @@ export function ToolTestConsoleScreen() {
     return response.tools;
   }, [initialServerId]);
 
-  const { data: tools, error, isLoading, reload } = useAsyncResource(
-    loadTools,
-    [initialServerId]
-  );
+  const {
+    data: tools,
+    error,
+    isLoading,
+    reload
+  } = useAsyncResource(loadTools, [initialServerId]);
 
   const selectedTool = useMemo(
     () => tools?.find((tool) => tool.id === selectedToolId) ?? null,
@@ -177,7 +179,9 @@ export function ToolTestConsoleScreen() {
 
         <PanelCard eyebrow="Schema" title="Input schema">
           {selectedTool ? (
-            <pre className="code-block">{formatJson(selectedTool.inputSchema)}</pre>
+            <pre className="code-block">
+              {formatJson(selectedTool.inputSchema)}
+            </pre>
           ) : (
             <EmptyState
               title="Select a tool"
@@ -203,9 +207,7 @@ export function ToolTestConsoleScreen() {
               onChange={(event) =>
                 setApprovalMode(
                   event.target.value as
-                    | "none"
-                    | "user-confirmation"
-                    | "dual-confirmation"
+                    "none" | "user-confirmation" | "dual-confirmation"
                 )
               }
               value={approvalMode}
@@ -217,7 +219,10 @@ export function ToolTestConsoleScreen() {
           </label>
           {actionError ? <p className="ui-error-text">{actionError}</p> : null}
           <div className="action-row">
-            <Button disabled={isExecuting || !selectedTool} onClick={() => void handleExecute()}>
+            <Button
+              disabled={isExecuting || !selectedTool}
+              onClick={() => void handleExecute()}
+            >
               {isExecuting ? "Executing…" : "Execute tool"}
             </Button>
           </div>

@@ -3,7 +3,10 @@ import type {
   McpServerHealthSnapshot,
   PluginRuntimeHealthSnapshot
 } from "@engineering-os/contracts/unstable-runtime";
-import { McpGatewayError, McpGatewayService } from "@engineering-os/mcp-gateway";
+import {
+  McpGatewayError,
+  McpGatewayService
+} from "@engineering-os/mcp-gateway";
 import { PermissionEngineService } from "@engineering-os/permission-engine";
 import type { SecretStore } from "@engineering-os/contracts/unstable-runtime";
 import type { InstalledPlugin } from "@engineering-os/plugin-registry";
@@ -84,9 +87,7 @@ export class PluginLifecycleService {
     });
   }
 
-  async upgradePlugin(
-    packagePath: string
-  ): Promise<{
+  async upgradePlugin(packagePath: string): Promise<{
     readonly plugin: InstalledPlugin;
     readonly previousManifest: PluginManifest;
     readonly revokedScopes: readonly string[];
@@ -94,50 +95,50 @@ export class PluginLifecycleService {
     const inspectedPackage =
       await this.options.pluginRegistry.inspectLocalPluginPackage(packagePath);
 
-    return this.runWithLifecycleLock(
-      inspectedPackage.manifest.id,
-      async () => {
-        const wasEnabled = Boolean(
-          this.options.pluginRegistry.getInstalledPlugin(
-            inspectedPackage.manifest.id
-          )?.enabled
+    return this.runWithLifecycleLock(inspectedPackage.manifest.id, async () => {
+      const wasEnabled = Boolean(
+        this.options.pluginRegistry.getInstalledPlugin(
+          inspectedPackage.manifest.id
+        )?.enabled
+      );
+
+      if (wasEnabled) {
+        await this.options.mcpGateway.stopServersForPlugin(
+          inspectedPackage.manifest.id
         );
+        await this.options.pluginRuntime.stopPlugin(
+          inspectedPackage.manifest.id
+        );
+      }
 
-        if (wasEnabled) {
-          await this.options.mcpGateway.stopServersForPlugin(
-            inspectedPackage.manifest.id
-          );
-          await this.options.pluginRuntime.stopPlugin(inspectedPackage.manifest.id);
-        }
+      const upgradeResult =
+        await this.options.pluginRegistry.upgradeLocalPluginPackage(
+          packagePath
+        );
+      const revokedScopes =
+        this.options.permissionEngine.syncGrantsAfterUpgrade(
+          upgradeResult.plugin.pluginId,
+          upgradeResult.previousManifest
+        );
+      const review = this.options.permissionEngine.getPermissionReview(
+        upgradeResult.plugin.pluginId
+      );
 
-        const upgradeResult =
-          await this.options.pluginRegistry.upgradeLocalPluginPackage(
-            packagePath
-          );
-        const revokedScopes =
-          this.options.permissionEngine.syncGrantsAfterUpgrade(
-            upgradeResult.plugin.pluginId,
-            upgradeResult.previousManifest
-          );
-        const review = this.options.permissionEngine.getPermissionReview(
+      if (wasEnabled && !review.canEnable) {
+        await this.options.pluginRegistry.disableInstalledPlugin(
           upgradeResult.plugin.pluginId
         );
+      }
 
-        if (wasEnabled && !review.canEnable) {
-          await this.options.pluginRegistry.disableInstalledPlugin(
-            upgradeResult.plugin.pluginId
-          );
-        }
-
-        return {
-          plugin: this.options.pluginRegistry.getInstalledPlugin(
+      return {
+        plugin:
+          this.options.pluginRegistry.getInstalledPlugin(
             upgradeResult.plugin.pluginId
           ) ?? upgradeResult.plugin,
-          previousManifest: upgradeResult.previousManifest,
-          revokedScopes
-        };
-      }
-    );
+        previousManifest: upgradeResult.previousManifest,
+        revokedScopes
+      };
+    });
   }
 
   startPlugin(pluginId: string): Promise<PluginRuntimeHealthSnapshot> {

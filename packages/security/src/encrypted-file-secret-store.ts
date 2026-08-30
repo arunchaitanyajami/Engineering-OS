@@ -1,8 +1,4 @@
-import {
-  createCipheriv,
-  createDecipheriv,
-  randomBytes
-} from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import {
   access,
@@ -17,7 +13,10 @@ import { join } from "node:path";
 import type { SecretStore } from "@engineering-os/contracts/unstable-runtime";
 
 import { SecretServiceError } from "./errors.js";
-import { assertValidSecretKey, assertValidSecretNamespace } from "./namespace.js";
+import {
+  assertValidSecretKey,
+  assertValidSecretNamespace
+} from "./namespace.js";
 
 const SECRET_STORE_VERSION = "v1";
 const MASTER_KEY_BYTES = 32;
@@ -46,10 +45,7 @@ const encryptSecretValue = (plaintext: string, masterKey: Buffer): string => {
   ].join(":");
 };
 
-const decryptSecretValue = (
-  ciphertext: string,
-  masterKey: Buffer
-): string => {
+const decryptSecretValue = (ciphertext: string, masterKey: Buffer): string => {
   const [version, ivValue, tagValue, encryptedValue] = ciphertext.split(":");
 
   if (
@@ -132,7 +128,9 @@ export class EncryptedFileSecretStore implements SecretStore {
     private readonly masterKey: Buffer
   ) {}
 
-  static async open(secretsDirectory: string): Promise<EncryptedFileSecretStore> {
+  static async open(
+    secretsDirectory: string
+  ): Promise<EncryptedFileSecretStore> {
     await mkdir(secretsDirectory, { recursive: true });
 
     const masterKeyPath = join(secretsDirectory, MASTER_KEY_FILE_NAME);

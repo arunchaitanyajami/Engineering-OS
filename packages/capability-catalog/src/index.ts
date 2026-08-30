@@ -22,8 +22,9 @@ export interface CapabilityCatalogSnapshot {
   readonly prompts: readonly PromptDescriptor[];
 }
 
-export const emptyCapabilityCatalogSnapshot = (): CapabilityCatalogSnapshot => ({
-  tools: [],
-  resources: [],
-  prompts: []
-});
+export const emptyCapabilityCatalogSnapshot =
+  (): CapabilityCatalogSnapshot => ({
+    tools: [],
+    resources: [],
+    prompts: []
+  });

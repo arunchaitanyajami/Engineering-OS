@@ -15,10 +15,12 @@ import {
 
 describe("@engineering-os/plugin-runtime contract compatibility", () => {
   it("uses the shared protocol version fixture", () => {
-    expect(currentPluginRuntimeProtocolVersion).toBe(pluginRuntimeProtocolVersion);
-    expect(readProtocolVersion({ protocolVersion: "1", type: "health-check" })).toBe(
-      "1"
+    expect(currentPluginRuntimeProtocolVersion).toBe(
+      pluginRuntimeProtocolVersion
     );
+    expect(
+      readProtocolVersion({ protocolVersion: "1", type: "health-check" })
+    ).toBe("1");
     expect(() =>
       assertSupportedProtocolVersion(currentPluginRuntimeProtocolVersion)
     ).not.toThrow();

@@ -17,7 +17,5 @@ export const createObservabilityLogger = (
 ): Logger =>
   createLogger({
     component: context.component,
-    ...(context.correlationId
-      ? { correlationId: context.correlationId }
-      : {})
+    ...(context.correlationId ? { correlationId: context.correlationId } : {})
   });

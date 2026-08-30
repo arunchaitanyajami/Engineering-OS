@@ -157,7 +157,10 @@ export function SettingsScreen() {
             </div>
             <div className="summary-list__row">
               <span>Tool test console</span>
-              <Link className="ui-button ui-button--ghost" to="/mcp/tool-console">
+              <Link
+                className="ui-button ui-button--ghost"
+                to="/mcp/tool-console"
+              >
                 Open console
               </Link>
             </div>

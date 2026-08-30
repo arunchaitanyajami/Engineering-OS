@@ -22,6 +22,10 @@
     {
       "scope": "mcp.register-server",
       "reason": "Registers the plugin-owned MCP server with the application gateway."
+    },
+    {
+      "scope": "tool.execute",
+      "reason": "Executes the plugin-owned MCP tools through the gateway."
     }
   ],
   "mcp": [

@@ -34,7 +34,9 @@ describe("PermissionEngineService", () => {
     directories.length = 0;
   });
 
-  const createEngine = async (manifestPermissions: readonly Record<string, unknown>[] = []) => {
+  const createEngine = async (
+    manifestPermissions: readonly Record<string, unknown>[] = []
+  ) => {
     const fixturesDirectory = await mkdtemp(
       join(tmpdir(), "engineering-os-permission-engine-")
     );
@@ -99,12 +101,12 @@ describe("PermissionEngineService", () => {
   it("allows enabling plugins with no declared permissions", async () => {
     const { installedPlugin, permissionEngine } = await createEngine();
 
-    expect(permissionEngine.getPermissionReview(installedPlugin.pluginId)).toMatchObject(
-      {
-        canEnable: true,
-        pendingRequirements: []
-      }
-    );
+    expect(
+      permissionEngine.getPermissionReview(installedPlugin.pluginId)
+    ).toMatchObject({
+      canEnable: true,
+      pendingRequirements: []
+    });
 
     expect(() =>
       permissionEngine.assertCanEnablePlugin(installedPlugin.pluginId)
@@ -123,15 +125,15 @@ describe("PermissionEngineService", () => {
       }
     ]);
 
-    expect(permissionEngine.getPermissionReview(installedPlugin.pluginId)).toMatchObject(
-      {
-        canEnable: false,
-        pendingRequirements: [
-          { scope: "process.spawn" },
-          { scope: "mcp.register-server" }
-        ]
-      }
-    );
+    expect(
+      permissionEngine.getPermissionReview(installedPlugin.pluginId)
+    ).toMatchObject({
+      canEnable: false,
+      pendingRequirements: [
+        { scope: "process.spawn" },
+        { scope: "mcp.register-server" }
+      ]
+    });
 
     expect(() =>
       permissionEngine.assertCanEnablePlugin(installedPlugin.pluginId)
@@ -145,11 +147,11 @@ describe("PermissionEngineService", () => {
       ]
     });
 
-    expect(permissionEngine.getPermissionReview(installedPlugin.pluginId)).toMatchObject(
-      {
-        canEnable: true
-      }
-    );
+    expect(
+      permissionEngine.getPermissionReview(installedPlugin.pluginId)
+    ).toMatchObject({
+      canEnable: true
+    });
   });
 
   it("revokes permission grants immediately", async () => {
@@ -165,14 +167,11 @@ describe("PermissionEngineService", () => {
       grants: [{ scope: "tool.execute", decision: "always-allow" }]
     });
 
-    permissionEngine.revokePermission(
-      installedPlugin.pluginId,
-      "tool.execute"
-    );
+    permissionEngine.revokePermission(installedPlugin.pluginId, "tool.execute");
 
-    expect(permissionEngine.hasActiveGrant(installedPlugin.pluginId, "tool.execute")).toBe(
-      false
-    );
+    expect(
+      permissionEngine.hasActiveGrant(installedPlugin.pluginId, "tool.execute")
+    ).toBe(false);
   });
 
   it("requires explicit approval for unknown-risk tool execution", () => {

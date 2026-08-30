@@ -6,10 +6,7 @@ import type {
 export type { RegisteredMcpServer, McpServerHealthSnapshot };
 
 export type McpClientConnectionState =
-  | "disconnected"
-  | "connecting"
-  | "connected"
-  | "failed";
+  "disconnected" | "connecting" | "connected" | "failed";
 
 export interface McpClientSessionSnapshot {
   readonly registrationId: string;

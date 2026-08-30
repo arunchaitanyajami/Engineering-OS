@@ -10,9 +10,9 @@ import {
 
 describe("plugin runtime protocol validation", () => {
   it("reads protocolVersion from runtime messages", () => {
-    expect(readProtocolVersion({ protocolVersion: "1", type: "health-check" })).toBe(
-      "1"
-    );
+    expect(
+      readProtocolVersion({ protocolVersion: "1", type: "health-check" })
+    ).toBe("1");
     expect(readProtocolVersion({ type: "health-check" })).toBe(undefined);
   });
 

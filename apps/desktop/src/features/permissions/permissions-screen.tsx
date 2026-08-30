@@ -46,7 +46,10 @@ const loadPermissionSummaries = async (): Promise<
 
 export function PermissionsScreen() {
   const loadSummaries = useCallback(loadPermissionSummaries, []);
-  const { data, error, isLoading, reload } = useAsyncResource(loadSummaries, []);
+  const { data, error, isLoading, reload } = useAsyncResource(
+    loadSummaries,
+    []
+  );
 
   if (!isDesktopBackendAvailable()) {
     return <BackendUnavailableNotice />;
@@ -120,7 +123,9 @@ export function PermissionsScreen() {
                     <span className="ui-muted">{summary.pluginId}</span>
                   </div>
                   <div className="action-row">
-                    <Badge tone={summary.pendingCount > 0 ? "warning" : "success"}>
+                    <Badge
+                      tone={summary.pendingCount > 0 ? "warning" : "success"}
+                    >
                       {summary.pendingCount > 0
                         ? `${summary.pendingCount} pending`
                         : "Granted"}

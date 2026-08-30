@@ -1,7 +1,13 @@
 import { useCallback, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { Badge, Button, EmptyState, PageHeader, PanelCard } from "@engineering-os/ui";
+import {
+  Badge,
+  Button,
+  EmptyState,
+  PageHeader,
+  PanelCard
+} from "@engineering-os/ui";
 
 import {
   BackendUnavailableNotice,
@@ -44,10 +50,7 @@ export function PluginsScreen() {
   const [isRegistering, setIsRegistering] = useState(false);
   const [isPickingDirectory, setIsPickingDirectory] = useState(false);
 
-  const loadPlugins = useCallback(
-    () => desktopBackendClient.listPlugins(),
-    []
-  );
+  const loadPlugins = useCallback(() => desktopBackendClient.listPlugins(), []);
   const { data, error, isLoading, reload } = useAsyncResource(loadPlugins, []);
 
   if (!isDesktopBackendAvailable()) {
@@ -155,7 +158,10 @@ export function PluginsScreen() {
           </p>
           {actionError ? <p className="ui-error-text">{actionError}</p> : null}
           <div className="action-row">
-            <Button disabled={isRegistering} onClick={() => void handleRegister()}>
+            <Button
+              disabled={isRegistering}
+              onClick={() => void handleRegister()}
+            >
               {isRegistering ? "Registering…" : "Register local package"}
             </Button>
           </div>

@@ -495,7 +495,9 @@ describe("PluginLifecycleService", () => {
       installedPlugin.pluginId,
       registrationId
     );
-    const disablePromise = pluginLifecycle.disablePlugin(installedPlugin.pluginId);
+    const disablePromise = pluginLifecycle.disablePlugin(
+      installedPlugin.pluginId
+    );
 
     const results = await Promise.allSettled([startPromise, disablePromise]);
 
@@ -602,7 +604,9 @@ describe("PluginLifecycleService", () => {
       installedPlugin.pluginId,
       registrationId
     );
-    const disablePromise = pluginLifecycle.disablePlugin(installedPlugin.pluginId);
+    const disablePromise = pluginLifecycle.disablePlugin(
+      installedPlugin.pluginId
+    );
 
     await expect(startPromise).rejects.toMatchObject({
       code: "MCP_GATEWAY_SERVER_START_FAILED"

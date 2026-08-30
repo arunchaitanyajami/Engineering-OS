@@ -290,12 +290,20 @@ importers:
       '@engineering-os/plugin-registry':
         specifier: workspace:*
         version: link:../plugin-registry
+    devDependencies:
+      '@engineering-os/testing':
+        specifier: workspace:*
+        version: link:../testing
 
   packages/plugin-sdk:
     dependencies:
       '@engineering-os/contracts':
         specifier: workspace:*
         version: link:../contracts
+    devDependencies:
+      '@engineering-os/testing':
+        specifier: workspace:*
+        version: link:../testing
 
   packages/security:
     dependencies:

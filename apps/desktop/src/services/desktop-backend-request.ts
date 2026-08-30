@@ -12,11 +12,36 @@ let cachedBackendConnection: TauriBackendConnectionResponse | null = null;
 export const isTauriEnvironment = (): boolean =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
-export const isDesktopBackendAvailable = (): boolean => isTauriEnvironment();
+const isE2eBackendMode = (): boolean =>
+  import.meta.env.VITE_E2E_BACKEND === "true";
+
+export const isDesktopBackendAvailable = (): boolean =>
+  isTauriEnvironment() || isE2eBackendMode();
+
+const resolveE2eBackendConnection = (): TauriBackendConnectionResponse => {
+  const baseUrl = import.meta.env.VITE_E2E_BACKEND_URL?.trim();
+  const authorizationToken = import.meta.env.VITE_E2E_BACKEND_TOKEN?.trim();
+
+  if (!baseUrl || !authorizationToken) {
+    throw new Error(
+      "Playwright E2E backend mode requires VITE_E2E_BACKEND_URL and VITE_E2E_BACKEND_TOKEN."
+    );
+  }
+
+  return {
+    baseUrl,
+    authorizationToken
+  };
+};
 
 const resolveBackendConnection =
   async (): Promise<TauriBackendConnectionResponse> => {
     if (cachedBackendConnection) {
+      return cachedBackendConnection;
+    }
+
+    if (isE2eBackendMode()) {
+      cachedBackendConnection = resolveE2eBackendConnection();
       return cachedBackendConnection;
     }
 
@@ -58,9 +83,9 @@ export const requestDesktopBackend = async <T>(
   path: string,
   init?: RequestInit
 ): Promise<T> => {
-  if (!isTauriEnvironment()) {
+  if (!isDesktopBackendAvailable()) {
     throw new Error(
-      "Desktop backend APIs are only available inside the Tauri runtime."
+      "Desktop backend APIs are only available inside the Tauri runtime or Playwright E2E mode."
     );
   }
 

@@ -11,6 +11,9 @@
     "@engineering-os/logger": "workspace:*",
     "@engineering-os/plugin-registry": "workspace:*"
   },
+  "devDependencies": {
+    "@engineering-os/testing": "workspace:*"
+  },
   "scripts": {
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",

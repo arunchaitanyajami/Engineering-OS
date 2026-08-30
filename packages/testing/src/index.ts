@@ -5,6 +5,16 @@ import {
 } from "@engineering-os/logger";
 import { type AuditEvent } from "@engineering-os/contracts/unstable-runtime";
 
+export {
+  createActivatePluginRequestFixture,
+  createInitializePluginRequestFixture,
+  currentPluginRuntimeProtocolVersion,
+  milestone2ReferencePluginIds,
+  milestone2ReferencePluginPaths,
+  readReferencePluginManifest,
+  type Milestone2ReferencePluginName
+} from "./contract-fixtures.js";
+
 export class InMemoryLogTransport implements LogTransport {
   readonly entries: LogEntry[] = [];
 

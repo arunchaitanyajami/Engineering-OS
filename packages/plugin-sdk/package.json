@@ -9,6 +9,9 @@
   "dependencies": {
     "@engineering-os/contracts": "workspace:*"
   },
+  "devDependencies": {
+    "@engineering-os/testing": "workspace:*"
+  },
   "scripts": {
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",

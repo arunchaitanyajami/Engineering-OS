@@ -73,6 +73,17 @@ export const appRouteDefinitions: readonly AppRouteDefinition[] = [
     enabled: true
   },
   {
+    id: "github",
+    path: "/integrations/github",
+    label: "GitHub",
+    title: "GitHub",
+    description:
+      "Enable the GitHub plugin, assign a workspace connection, and browse repositories and pull requests.",
+    icon: createLetterIcon("G"),
+    navigationGroup: "platform",
+    enabled: true
+  },
+  {
     id: "permissions",
     path: "/permissions",
     label: "Permissions",

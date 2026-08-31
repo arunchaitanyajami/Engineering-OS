@@ -1,0 +1,18 @@
+{
+  "name": "@engineering-os/source-control-domain",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Normalized source-control and PR review domain contracts. GitHub SDK types must not leak into this package.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "zod": "^3.24.1"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests --ext .ts --no-error-on-unmatched-pattern"
+  }
+}

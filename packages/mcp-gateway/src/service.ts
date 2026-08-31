@@ -463,6 +463,10 @@ export class McpGatewayService {
     ReturnType<typeof setTimeout>
   >();
   private readonly processEnv: NodeJS.ProcessEnv;
+  private readonly transportEnvironmentOverlays = new Map<
+    string,
+    Readonly<Record<string, GatewayEnvironmentValue>>
+  >();
   private disposing = false;
 
   constructor(private readonly options: McpGatewayServiceOptions) {
@@ -1064,6 +1068,18 @@ export class McpGatewayService {
 
       return failedResult;
     }
+  }
+
+  setTransportEnvironmentOverlay(
+    registrationId: string,
+    environment: Readonly<Record<string, GatewayEnvironmentValue>>
+  ): void {
+    this.requireRegisteredServer(registrationId);
+    this.transportEnvironmentOverlays.set(registrationId, { ...environment });
+    this.logger.info("Updated MCP transport environment overlay.", {
+      registrationId,
+      environmentKeys: Object.keys(environment)
+    });
   }
 
   async startServer(registrationId: string): Promise<McpServerHealthSnapshot> {
@@ -1675,9 +1691,13 @@ export class McpGatewayService {
       }
     }
 
-    for (const [key, value] of Object.entries(
-      registration.transport.env ?? {}
-    )) {
+    const overlay =
+      this.transportEnvironmentOverlays.get(registration.registrationId) ?? {};
+
+    for (const [key, value] of Object.entries({
+      ...(registration.transport.env ?? {}),
+      ...overlay
+    })) {
       environment[key] = await this.resolveEnvironmentValue(
         registration,
         value

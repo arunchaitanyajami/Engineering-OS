@@ -83,7 +83,24 @@ import type {
 } from "@engineering-os/platform";
 import { z } from "zod";
 
+import {
+  GitHubBrowseService,
+  getGitHubPullRequestRequestSchema,
+  getGitHubPullRequestFilesRequestSchema,
+  listGitHubPullRequestsRequestSchema,
+  listGitHubRepositoriesRequestSchema
+} from "./github-browse-service.js";
+import {
+  GitHubConnectionService,
+  createGitHubConnectionRequestSchema,
+  githubConnectionReferenceRequestSchema
+} from "./github-connection-service.js";
+import { PluginConnectionError } from "./plugin-connection-error.js";
 import { PluginLifecycleService } from "./plugin-lifecycle-service.js";
+import {
+  WorkspaceService,
+  createWorkspaceRequestSchema
+} from "./workspace-service.js";
 
 const require = createRequire(import.meta.url);
 const desktopPackageMetadata = require("../../desktop/package.json") as {
@@ -164,6 +181,9 @@ export interface BackendContext {
   readonly auditService: AuditService;
   readonly secretService: SecretService;
   readonly toolSafety: ToolSafetyService;
+  readonly workspaceService: WorkspaceService;
+  readonly githubConnectionService: GitHubConnectionService;
+  readonly githubBrowseService: GitHubBrowseService;
   readonly logger: ReturnType<typeof createLogger>;
   flushLogs(): Promise<void>;
 }
@@ -335,19 +355,19 @@ const asPublicError = (
   fallbackMessage = "Desktop backend request failed.",
   fallbackStatusCode = 500
 ): BackendPublicError =>
-  error instanceof PluginRegistryError
+  error instanceof PluginConnectionError
     ? new BackendPublicError(error.code, error.message, error.statusCode, {
         cause: error.cause ?? error
       })
-    : error instanceof McpGatewayError
+    : error instanceof PluginRegistryError
       ? new BackendPublicError(error.code, error.message, error.statusCode, {
           cause: error.cause ?? error
         })
-      : error instanceof McpUserRegistrationStoreError
+      : error instanceof McpGatewayError
         ? new BackendPublicError(error.code, error.message, error.statusCode, {
             cause: error.cause ?? error
           })
-        : error instanceof PluginRuntimeError
+        : error instanceof McpUserRegistrationStoreError
           ? new BackendPublicError(
               error.code,
               error.message,
@@ -356,7 +376,7 @@ const asPublicError = (
                 cause: error.cause ?? error
               }
             )
-          : error instanceof PermissionEngineError
+          : error instanceof PluginRuntimeError
             ? new BackendPublicError(
                 error.code,
                 error.message,
@@ -365,7 +385,7 @@ const asPublicError = (
                   cause: error.cause ?? error
                 }
               )
-            : error instanceof SecretServiceError
+            : error instanceof PermissionEngineError
               ? new BackendPublicError(
                   error.code,
                   error.message,
@@ -374,16 +394,25 @@ const asPublicError = (
                     cause: error.cause ?? error
                   }
                 )
-              : error instanceof BackendPublicError
-                ? error
-                : new BackendPublicError(
-                    fallbackCode,
-                    fallbackMessage,
-                    fallbackStatusCode,
+              : error instanceof SecretServiceError
+                ? new BackendPublicError(
+                    error.code,
+                    error.message,
+                    error.statusCode,
                     {
-                      cause: error
+                      cause: error.cause ?? error
                     }
-                  );
+                  )
+                : error instanceof BackendPublicError
+                  ? error
+                  : new BackendPublicError(
+                      fallbackCode,
+                      fallbackMessage,
+                      fallbackStatusCode,
+                      {
+                        cause: error
+                      }
+                    );
 
 const atomicWriteFile = async (
   path: string,
@@ -970,6 +999,20 @@ export const createBackendContext = async (
     permissionEngine,
     secretStore: secretService
   });
+  const workspaceService = new WorkspaceService(database);
+  const githubConnectionService = new GitHubConnectionService({
+    database,
+    secretStore: secretService,
+    pluginRegistry,
+    auditService,
+    workspaces: workspaceService
+  });
+  const githubBrowseService = new GitHubBrowseService({
+    connections: githubConnectionService,
+    pluginRegistry,
+    mcpGateway,
+    permissionEngine
+  });
   database.setMetadata("database_status", "ready");
 
   return {
@@ -990,6 +1033,9 @@ export const createBackendContext = async (
     auditService,
     secretService,
     toolSafety,
+    workspaceService,
+    githubConnectionService,
+    githubBrowseService,
     logger,
     flushLogs: () => fileLogTransport.flush()
   };
@@ -1073,6 +1119,31 @@ const finalizeSuccessfulToolExecution = (
       "tool.execute"
     );
   }
+};
+
+const readGitHubBrowseQuery = <T>(
+  searchParams: URLSearchParams,
+  schema: z.ZodType<T>,
+  fields: readonly string[]
+): T => {
+  const parsed = schema.safeParse(
+    Object.fromEntries(
+      fields.flatMap((field) => {
+        const value = searchParams.get(field)?.trim();
+        return value ? [[field, value]] : [];
+      })
+    )
+  );
+
+  if (!parsed.success) {
+    throw new BackendPublicError(
+      "GITHUB_BROWSE_REQUEST_INVALID",
+      "GitHub browse request is invalid.",
+      400
+    );
+  }
+
+  return parsed.data;
 };
 
 export const createDesktopBackendHandler =
@@ -1513,6 +1584,204 @@ export const createDesktopBackendHandler =
 
         await context.secretService.delete(namespace, key);
         writeJson(response, { ok: true });
+        return;
+      }
+
+      if (request.method === "GET" && requestUrl.pathname === "/workspaces") {
+        writeJson(response, {
+          workspaces: context.workspaceService.listWorkspaces()
+        });
+        return;
+      }
+
+      if (request.method === "POST" && requestUrl.pathname === "/workspaces") {
+        const createRequest = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          createWorkspaceRequestSchema,
+          "WORKSPACE_REQUEST_INVALID",
+          "Workspace request is invalid."
+        );
+
+        writeJson(response, {
+          workspace: context.workspaceService.createWorkspace(createRequest)
+        });
+        return;
+      }
+
+      if (
+        request.method === "GET" &&
+        requestUrl.pathname === "/github/connections"
+      ) {
+        const workspaceId = requestUrl.searchParams.get("workspaceId")?.trim();
+
+        if (!workspaceId) {
+          throw new BackendPublicError(
+            "GITHUB_CONNECTION_REQUEST_INVALID",
+            "GitHub connections require a workspaceId query parameter.",
+            400
+          );
+        }
+
+        writeJson(response, {
+          connections:
+            context.githubConnectionService.listConnections(workspaceId)
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/github/connections"
+      ) {
+        const createRequest = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          createGitHubConnectionRequestSchema,
+          "GITHUB_CONNECTION_REQUEST_INVALID",
+          "GitHub connection request is invalid."
+        );
+        const requestAbortSignal = createRequestAbortSignal(request, response);
+
+        writeJson(response, {
+          connection: await context.githubConnectionService.createConnection(
+            createRequest,
+            requestAbortSignal
+          )
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/github/connections/disconnect"
+      ) {
+        const disconnectRequest = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          githubConnectionReferenceRequestSchema,
+          "GITHUB_CONNECTION_REQUEST_INVALID",
+          "GitHub connection request is invalid."
+        );
+
+        writeJson(response, {
+          connection:
+            await context.githubConnectionService.disconnect(disconnectRequest)
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/github/connections/verify"
+      ) {
+        const verifyRequest = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          githubConnectionReferenceRequestSchema,
+          "GITHUB_CONNECTION_REQUEST_INVALID",
+          "GitHub connection request is invalid."
+        );
+        const requestAbortSignal = createRequestAbortSignal(request, response);
+
+        writeJson(response, {
+          connection: await context.githubConnectionService.verifyConnection(
+            verifyRequest,
+            requestAbortSignal
+          )
+        });
+        return;
+      }
+
+      if (
+        request.method === "GET" &&
+        requestUrl.pathname === "/github/repositories"
+      ) {
+        const browseRequest = readGitHubBrowseQuery(
+          requestUrl.searchParams,
+          listGitHubRepositoriesRequestSchema,
+          ["workspaceId", "connectionId"]
+        );
+        const requestAbortSignal = createRequestAbortSignal(request, response);
+
+        writeJson(response, {
+          repositories: await context.githubBrowseService.listRepositories(
+            browseRequest,
+            requestAbortSignal
+          )
+        });
+        return;
+      }
+
+      if (
+        request.method === "GET" &&
+        requestUrl.pathname === "/github/pull-requests"
+      ) {
+        const browseRequest = readGitHubBrowseQuery(
+          requestUrl.searchParams,
+          listGitHubPullRequestsRequestSchema,
+          ["workspaceId", "connectionId", "owner", "repository", "state"]
+        );
+        const requestAbortSignal = createRequestAbortSignal(request, response);
+
+        writeJson(response, {
+          pullRequests: await context.githubBrowseService.listPullRequests(
+            browseRequest,
+            requestAbortSignal
+          )
+        });
+        return;
+      }
+
+      if (
+        request.method === "GET" &&
+        requestUrl.pathname === "/github/pull-request"
+      ) {
+        const browseRequest = readGitHubBrowseQuery(
+          requestUrl.searchParams,
+          getGitHubPullRequestRequestSchema,
+          [
+            "workspaceId",
+            "connectionId",
+            "owner",
+            "repository",
+            "pullRequestNumber"
+          ]
+        );
+        const requestAbortSignal = createRequestAbortSignal(request, response);
+
+        writeJson(response, {
+          pullRequest: await context.githubBrowseService.getPullRequest(
+            browseRequest,
+            requestAbortSignal
+          )
+        });
+        return;
+      }
+
+      if (
+        request.method === "GET" &&
+        requestUrl.pathname === "/github/pull-request/files"
+      ) {
+        const browseRequest = readGitHubBrowseQuery(
+          requestUrl.searchParams,
+          getGitHubPullRequestFilesRequestSchema,
+          [
+            "workspaceId",
+            "connectionId",
+            "owner",
+            "repository",
+            "pullRequestNumber"
+          ]
+        );
+        const requestAbortSignal = createRequestAbortSignal(request, response);
+
+        writeJson(response, {
+          diffSet: await context.githubBrowseService.getPullRequestFiles(
+            browseRequest,
+            requestAbortSignal
+          )
+        });
         return;
       }
 

@@ -25,7 +25,8 @@ const routeUsesPrefixMatch = (routeId: string): boolean =>
   routeId === "sessions" ||
   routeId === "plugins" ||
   routeId === "permissions" ||
-  routeId === "mcp-servers";
+  routeId === "mcp-servers" ||
+  routeId === "github";
 
 const getCurrentRoute = (pathname: string) =>
   appRouteDefinitions.find((routeDefinition) =>
@@ -84,6 +85,26 @@ export function DesktopShellLayout() {
         category: "Navigation",
         keywords: ["sessions", "history"],
         execute: () => navigate("/sessions")
+      },
+      {
+        id: "navigate.github",
+        title: "Open GitHub",
+        category: "Navigation",
+        keywords: [
+          "github",
+          "connection",
+          "integration",
+          "repository",
+          "pull request"
+        ],
+        execute: () => navigate("/integrations/github")
+      },
+      {
+        id: "navigate.github-browser",
+        title: "Browse GitHub repositories",
+        category: "Navigation",
+        keywords: ["github", "repository", "pull request", "browser"],
+        execute: () => navigate("/integrations/github/browse")
       },
       {
         id: "navigate.settings",

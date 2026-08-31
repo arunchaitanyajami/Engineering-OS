@@ -1,0 +1,10 @@
+diff --git a/src/checkout/sum.ts b/src/checkout/totals.ts
+similarity index 92%
+rename from src/checkout/sum.ts
+rename to src/checkout/totals.ts
+--- a/src/checkout/sum.ts
++++ b/src/checkout/totals.ts
+@@ -1,3 +1,4 @@
+ export const sum = 1;
++export const tax = 1;
+ export const total = 2;

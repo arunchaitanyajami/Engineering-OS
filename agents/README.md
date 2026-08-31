@@ -4,7 +4,7 @@ Specialized agents live here.
 
 Planned agent modules:
 
-- `pr-reviewer`
+- `pr-reviewer` (diff parsing and file-review policy in Milestone 3)
 - `jira-analyst`
 - `architect`
 - `doc-writer`

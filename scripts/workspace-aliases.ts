@@ -31,7 +31,13 @@ const workspaceAliasEntries = [
   ["@engineering-os/platform", "../packages/platform/src/index.ts"],
   ["@engineering-os/events", "../packages/events/src/index.ts"],
   ["@engineering-os/ui", "../packages/ui/src/index.tsx"],
-  ["@engineering-os/testing", "../packages/testing/src/index.ts"]
+  ["@engineering-os/testing", "../packages/testing/src/index.ts"],
+  [
+    "@engineering-os/source-control-domain",
+    "../packages/source-control-domain/src/index.ts"
+  ],
+  ["@engineering-os/pr-reviewer", "../agents/pr-reviewer/src/index.ts"],
+  ["@engineering-os/github-plugin", "../plugins/github/src/index.ts"]
 ] as const;
 
 export const workspaceAliases = [

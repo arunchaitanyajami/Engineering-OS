@@ -67,6 +67,18 @@ const PermissionsScreen = lazy(() =>
     default: module.PermissionsScreen
   }))
 );
+const GitHubConnectionScreen = lazy(() =>
+  import("../features/github-connection/github-connection-screen").then(
+    (module) => ({
+      default: module.GitHubConnectionScreen
+    })
+  )
+);
+const GitHubBrowserScreen = lazy(() =>
+  import("../features/github-browser/github-browser-screen").then((module) => ({
+    default: module.GitHubBrowserScreen
+  }))
+);
 
 const withSuspense = (element: ReactNode) => (
   <Suspense
@@ -129,6 +141,14 @@ const router = createBrowserRouter([
         element: withSuspense(<PermissionsScreen />)
       },
       {
+        path: "integrations/github",
+        element: withSuspense(<GitHubConnectionScreen />)
+      },
+      {
+        path: "integrations/github/browse",
+        element: withSuspense(<GitHubBrowserScreen />)
+      },
+      {
         path: "mcp/servers",
         element: withSuspense(<McpServersScreen />)
       },
@@ -173,6 +193,10 @@ const router = createBrowserRouter([
       {
         path: "settings/permissions",
         element: <Navigate replace to="/permissions" />
+      },
+      {
+        path: "settings/github",
+        element: <Navigate replace to="/integrations/github" />
       },
       {
         path: "*",

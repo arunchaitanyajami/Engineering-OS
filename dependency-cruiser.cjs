@@ -6,7 +6,7 @@ module.exports = {
       path: "node_modules"
     },
     includeOnly:
-      "^(apps/[^/]+/(src|tests|src-tauri/src)|apps/[^/]+/(vite|playwright)\\.config\\.ts|packages/[^/]+/(src|tests)|plugins/[^/]+/(src|tests))",
+      "^(apps/[^/]+/(src|tests|src-tauri/src)|apps/[^/]+/(vite|playwright)\\.config\\.ts|packages/[^/]+/(src|tests)|plugins/[^/]+/(src|tests)|agents/[^/]+/(src|tests)|workflows/[^/]+/(src|tests))",
     exclude: {
       path: "(^|/)(dist|target|coverage|test-results|playwright-report)/"
     }
@@ -38,6 +38,16 @@ module.exports = {
       },
       to: {
         path: "^packages/(?!shared|contracts)"
+      }
+    },
+    {
+      name: "source-control-domain-only-depends-on-shared",
+      severity: "error",
+      from: {
+        path: "^packages/source-control-domain"
+      },
+      to: {
+        path: "^packages/(?!shared|source-control-domain)"
       }
     },
     {
@@ -87,7 +97,17 @@ module.exports = {
         path: "^plugins/"
       },
       to: {
-        path: "^packages/(?!contracts|plugin-sdk)"
+        path: "^packages/(?!contracts|plugin-sdk|source-control-domain)"
+      }
+    },
+    {
+      name: "agents-do-not-import-apps-or-plugins",
+      severity: "error",
+      from: {
+        path: "^agents/"
+      },
+      to: {
+        path: "^(apps|plugins)/"
       }
     }
   ]

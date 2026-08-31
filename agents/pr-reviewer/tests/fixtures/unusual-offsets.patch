@@ -1,0 +1,6 @@
+@@ -100,4 +250,5 @@ unusual
+ const offset = 100;
+ const keep = 101;
++const inserted = 102;
+ const last = 103;
+ const end = 104;

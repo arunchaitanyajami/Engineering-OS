@@ -43,6 +43,7 @@ desktop app
 - `packages/database`: SQLite lifecycle and migrations.
 - `packages/events`: in-process typed event bus.
 - `packages/testing`: shared testing fixtures and helpers.
+- `packages/source-control-domain`: normalized repository, pull request, diff, and review contracts.
 - `plugins/*`: independently installable connectors.
 - `agents/*`: specialized engineering agents.
 - `workflows/*`: reusable engineering workflows.

@@ -13,6 +13,7 @@ Documentation for building Engineering OS connector plugins.
 
 - `@engineering-os/contracts` — stable manifest and permission types
 - `@engineering-os/plugin-sdk` — supported plugin author surface
+- `@engineering-os/source-control-domain` — normalized SCM and PR review types
 
 ## Reference plugins
 
@@ -21,4 +22,4 @@ Documentation for building Engineering OS connector plugins.
 
 ## Rules
 
-Plugins may depend only on `contracts` and `plugin-sdk`. They must not import desktop UI code, database packages, other plugin trees, or AI provider implementations.
+Plugins may depend only on `contracts`, `plugin-sdk`, and `source-control-domain`. They must not import desktop UI code, database packages, other plugin trees, AI provider implementations, or SCM SDK types outside the owning plugin.

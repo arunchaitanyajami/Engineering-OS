@@ -6,5 +6,12 @@
     "lib": ["ES2022"],
     "types": ["node"]
   },
-  "include": ["apps", "packages", "playwright.config.ts", "vitest.workspace.ts"]
+  "include": [
+    "apps",
+    "packages",
+    "plugins",
+    "agents",
+    "playwright.config.ts",
+    "vitest.workspace.ts"
+  ]
 }

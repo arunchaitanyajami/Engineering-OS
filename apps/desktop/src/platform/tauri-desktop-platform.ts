@@ -9,6 +9,11 @@ import type {
   PlatformInfo
 } from "@engineering-os/platform";
 
+import {
+  isTauriEnvironment,
+  requestDesktopBackend
+} from "../services/desktop-backend-request.js";
+
 interface TauriPlatformInfoResponse {
   readonly operatingSystem: OperatingSystem;
   readonly family: string;
@@ -17,19 +22,8 @@ interface TauriPlatformInfoResponse {
   readonly isDevelopment: boolean;
 }
 
-interface TauriBackendConnectionResponse {
-  readonly baseUrl: string;
-  readonly authorizationToken: string;
-}
-
 const BROWSER_CONFIG_KEY = "engineering-os.application-config";
 const BROWSER_SESSION_KEY = "engineering-os.sessions";
-const BACKEND_RETRY_ATTEMPTS = 10;
-const BACKEND_RETRY_DELAY_MS = 150;
-let cachedBackendConnection: TauriBackendConnectionResponse | null = null;
-
-const isTauriEnvironment = (): boolean =>
-  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 const inferOperatingSystem = (): OperatingSystem => {
   if (typeof navigator === "undefined") {
@@ -62,88 +56,10 @@ const createBrowserFallbackInfo = (): PlatformInfo => ({
   isTauri: false
 });
 
-const resolveBackendConnection =
-  async (): Promise<TauriBackendConnectionResponse> => {
-    if (cachedBackendConnection) {
-      return cachedBackendConnection;
-    }
-
-    cachedBackendConnection = await invoke<TauriBackendConnectionResponse>(
-      "get_backend_connection"
-    );
-    return cachedBackendConnection;
-  };
-
-const parseBackendError = async (response: Response): Promise<Error> => {
-  try {
-    const payload = (await response.json()) as {
-      readonly code?: string;
-      readonly message?: string;
-    };
-
-    return new Error(
-      payload.message ??
-        `Desktop backend request failed with status ${response.status}.`
-    );
-  } catch {
-    return new Error(
-      `Desktop backend request failed with status ${response.status}.`
-    );
-  }
-};
-
-const wait = async (milliseconds: number): Promise<void> =>
-  new Promise((resolve) => {
-    window.setTimeout(resolve, milliseconds);
-  });
-
-const isRetryableBackendError = (error: unknown): boolean =>
-  error instanceof TypeError ||
-  (error instanceof Error &&
-    /fetch|network|load failed|failed to fetch/i.test(error.message));
-
-const requestDesktopBackend = async <T>(
-  path: string,
-  init?: RequestInit
-): Promise<T> => {
-  const connection = await resolveBackendConnection();
-
-  for (let attempt = 1; attempt <= BACKEND_RETRY_ATTEMPTS; attempt += 1) {
-    try {
-      const response = await fetch(`${connection.baseUrl}${path}`, {
-        ...init,
-        headers: {
-          authorization: `Bearer ${connection.authorizationToken}`,
-          "content-type": "application/json",
-          ...(init?.headers ?? {})
-        }
-      });
-
-      if (!response.ok) {
-        throw await parseBackendError(response);
-      }
-
-      return (await response.json()) as T;
-    } catch (error) {
-      const canRetry =
-        attempt < BACKEND_RETRY_ATTEMPTS && isRetryableBackendError(error);
-
-      if (!canRetry) {
-        throw error;
-      }
-
-      // Dev startup can race the local backend by a few hundred milliseconds.
-      await wait(BACKEND_RETRY_DELAY_MS * attempt);
-    }
-  }
-
-  throw new Error("Desktop backend request retry budget was exhausted.");
-};
-
 export class TauriDesktopPlatform implements DesktopPlatform {
   async getAppVersion(): Promise<string> {
     if (!isTauriEnvironment()) {
-      return "0.1.0-dev";
+      return "0.2.0-dev";
     }
 
     return invoke<string>("get_app_version");

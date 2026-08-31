@@ -4,21 +4,49 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
 import {
+  permissionScope,
+  type PermissionScope
+} from "@engineering-os/contracts";
+import {
   activatePluginRequestSchema,
   healthCheckRequestSchema,
   initializePluginRequestSchema,
+  invokePluginCapabilityResponseSchema,
+  pluginRuntimeBrokerRequestSchema,
   pluginRuntimeHealthSnapshotSchema,
   pluginRuntimeProtocolVersion,
+  readConfigurationRequestSchema,
+  readConfigurationResponseSchema,
   rpcResponseSchema,
+  invokePluginCapabilityRequestSchema,
   shutdownPluginRequestSchema,
+  type InvokePluginCapabilityResponse,
+  type PluginRuntimeBrokerRequest,
   type PluginRuntimeHealthSnapshot,
-  type PluginRuntimeStatus
+  type PluginRuntimeStatus,
+  type PermissionGrantDecision,
+  type ReadConfigurationResponse,
+  type SecretStore
 } from "@engineering-os/contracts/unstable-runtime";
 import type { Logger } from "@engineering-os/logger";
+import {
+  classifyError,
+  logObservabilityEvent,
+  observabilityEvents
+} from "@engineering-os/observability";
 import {
   calculateManagedInstallationHash,
   type InstalledPlugin
 } from "@engineering-os/plugin-registry";
+
+import {
+  assertIpcMessageWithinLimit,
+  estimateIpcMessageBytes
+} from "./ipc-message-size.js";
+import {
+  assertSupportedProtocolVersion,
+  PluginRuntimeProtocolError
+} from "./protocol.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
@@ -73,10 +101,36 @@ export interface PluginRuntimeWorkerOptions {
   readonly env?: NodeJS.ProcessEnv;
 }
 
+export interface PluginPermissionBroker {
+  checkPermission(input: {
+    readonly pluginId: string;
+    readonly scope: PermissionScope;
+    readonly constraint?: Record<string, unknown>;
+    readonly sessionId?: string;
+  }): boolean;
+  requestPermission(input: {
+    readonly pluginId: string;
+    readonly scope: PermissionScope;
+    readonly reason: string;
+    readonly constraint?: Record<string, unknown>;
+    readonly sessionId?: string;
+  }): PermissionGrantDecision;
+}
+
+export interface PluginConfigurationBroker {
+  getConfiguration(input: {
+    readonly pluginId: string;
+    readonly key: string;
+  }): unknown | null;
+}
+
 export interface PluginRuntimeServiceOptions {
   readonly pluginResolver: InstalledPluginResolver;
   readonly logger: Logger;
   readonly worker: PluginRuntimeWorkerOptions;
+  readonly permissionBroker?: PluginPermissionBroker;
+  readonly configurationBroker?: PluginConfigurationBroker;
+  readonly secretStore?: SecretStore;
   readonly requestTimeoutMs?: number;
   readonly startupTimeoutMs?: number;
   readonly shutdownGracePeriodMs?: number;
@@ -126,6 +180,7 @@ export class PluginRuntimeService {
   private readonly logger: Logger;
   private readonly runtimes = new Map<string, ManagedPluginRuntime>();
   private readonly snapshots = new Map<string, PluginRuntimeHealthSnapshot>();
+  private readonly startupDurations = new Map<string, number>();
   private readonly crashHistory = new Map<string, number[]>();
   private readonly lifecycleLocks = new Map<string, Promise<void>>();
   private readonly desiredStates = new Map<string, DesiredRuntimeState>();
@@ -165,6 +220,9 @@ export class PluginRuntimeService {
         pluginId,
         status: "stopped",
         healthy: false,
+        ...(this.startupDurations.has(pluginId)
+          ? { startupDurationMs: this.startupDurations.get(pluginId) }
+          : {}),
         restartCount: this.getRestartCount(pluginId)
       }
     );
@@ -192,11 +250,56 @@ export class PluginRuntimeService {
     const snapshot = pluginRuntimeHealthSnapshotSchema.parse(response.data);
     const mergedSnapshot = {
       ...snapshot,
+      ...(this.startupDurations.has(pluginId)
+        ? { startupDurationMs: this.startupDurations.get(pluginId) }
+        : {}),
       restartCount: this.getRestartCount(pluginId)
     } satisfies PluginRuntimeHealthSnapshot;
 
     this.snapshots.set(pluginId, mergedSnapshot);
     return mergedSnapshot;
+  }
+
+  async readPluginConfiguration(
+    pluginId: string,
+    key: string
+  ): Promise<ReadConfigurationResponse> {
+    const runtime = this.requireRunningRuntime(pluginId);
+    const response = await this.sendRequest(
+      runtime,
+      readConfigurationRequestSchema.parse({
+        protocolVersion: pluginRuntimeProtocolVersion,
+        type: "read-configuration",
+        requestId: randomUUID(),
+        pluginId,
+        key
+      }),
+      this.requestTimeoutMs
+    );
+
+    return readConfigurationResponseSchema.parse(response.data);
+  }
+
+  async invokePluginCapability(
+    pluginId: string,
+    capability: string,
+    payload: Record<string, unknown> = {}
+  ): Promise<InvokePluginCapabilityResponse> {
+    const runtime = this.requireRunningRuntime(pluginId);
+    const response = await this.sendRequest(
+      runtime,
+      invokePluginCapabilityRequestSchema.parse({
+        protocolVersion: pluginRuntimeProtocolVersion,
+        type: "invoke-plugin-capability",
+        requestId: randomUUID(),
+        pluginId,
+        capability,
+        payload
+      }),
+      this.requestTimeoutMs
+    );
+
+    return invokePluginCapabilityResponseSchema.parse(response.data);
   }
 
   async startPlugin(pluginId: string): Promise<PluginRuntimeHealthSnapshot> {
@@ -299,6 +402,7 @@ export class PluginRuntimeService {
     generation: number
   ): Promise<PluginRuntimeHealthSnapshot> {
     this.throwIfDisposing();
+    const startupStartedAt = Date.now();
 
     if (this.getDesiredState(pluginId) !== "running") {
       return this.getRuntimeHealth(pluginId);
@@ -318,6 +422,15 @@ export class PluginRuntimeService {
 
     const installedPlugin = this.requireRunnableInstalledPlugin(pluginId);
     await this.verifyManagedInstallation(installedPlugin);
+    logObservabilityEvent(
+      this.logger,
+      "info",
+      observabilityEvents.pluginValidated,
+      {
+        pluginId,
+        version: installedPlugin.manifest.version
+      }
+    );
     await this.options.onBeforeRuntimeSpawn?.(installedPlugin);
     this.throwIfDisposing();
 
@@ -367,6 +480,18 @@ export class PluginRuntimeService {
         this.startupTimeoutMs
       );
       runtime.activatedAt = new Date().toISOString();
+      const startupDurationMs = Date.now() - startupStartedAt;
+      this.startupDurations.set(pluginId, startupDurationMs);
+      logObservabilityEvent(
+        runtime.logger,
+        "info",
+        observabilityEvents.pluginStarted,
+        {
+          pluginId,
+          processId: runtime.child.pid,
+          startupDurationMs
+        }
+      );
 
       return this.updateSnapshot(pluginId, {
         status: "running",
@@ -376,16 +501,35 @@ export class PluginRuntimeService {
           ? { initializedAt: runtime.initializedAt }
           : {}),
         ...(runtime.activatedAt ? { activatedAt: runtime.activatedAt } : {}),
+        startupDurationMs,
         restartCount: this.getRestartCount(pluginId)
       });
     } catch (error) {
+      this.startupDurations.set(pluginId, Date.now() - startupStartedAt);
       await this.forceCleanupRuntime(runtime);
       this.updateSnapshot(pluginId, {
         status: "failed",
         healthy: false,
         lastError: this.toErrorMessage(error),
+        ...(this.startupDurations.get(pluginId) !== undefined
+          ? { startupDurationMs: this.startupDurations.get(pluginId) }
+          : {}),
         restartCount: this.getRestartCount(pluginId)
       });
+      logObservabilityEvent(
+        runtime.logger,
+        "error",
+        observabilityEvents.pluginFailed,
+        {
+          pluginId,
+          processId: runtime.child.pid,
+          ...(this.startupDurations.get(pluginId) !== undefined
+            ? { startupDurationMs: this.startupDurations.get(pluginId) }
+            : {}),
+          ...classifyError(error)
+        },
+        error
+      );
       throw error;
     }
   }
@@ -460,16 +604,45 @@ export class PluginRuntimeService {
         status: "failed",
         healthy: false,
         lastError: `Plugin '${runtime.pluginId}' did not exit after forced termination.`,
+        ...(this.startupDurations.get(runtime.pluginId) !== undefined
+          ? { startupDurationMs: this.startupDurations.get(runtime.pluginId) }
+          : {}),
         restartCount: this.getRestartCount(runtime.pluginId)
       });
     }
 
     this.runtimes.delete(runtime.pluginId);
+    logObservabilityEvent(
+      runtime.logger,
+      "info",
+      observabilityEvents.pluginStopped,
+      {
+        pluginId: runtime.pluginId,
+        processId: runtime.child.pid
+      }
+    );
     return this.updateSnapshot(runtime.pluginId, {
       status: "stopped",
       healthy: false,
+      ...(this.startupDurations.get(runtime.pluginId) !== undefined
+        ? { startupDurationMs: this.startupDurations.get(runtime.pluginId) }
+        : {}),
       restartCount: this.getRestartCount(runtime.pluginId)
     });
+  }
+
+  private requireRunningRuntime(pluginId: string): ManagedPluginRuntime {
+    const runtime = this.runtimes.get(pluginId);
+
+    if (!runtime) {
+      throw new PluginRuntimeError(
+        "PLUGIN_RUNTIME_NOT_RUNNING",
+        `Plugin '${pluginId}' runtime is not running.`,
+        409
+      );
+    }
+
+    return runtime;
   }
 
   private requireRunnableInstalledPlugin(pluginId: string): InstalledPlugin {
@@ -600,7 +773,7 @@ export class PluginRuntimeService {
     lines.on("line", (line) => {
       const metadata = {
         pluginId: runtime.pluginId,
-        pid: runtime.child.pid,
+        processId: runtime.child.pid,
         stream
       };
 
@@ -614,6 +787,56 @@ export class PluginRuntimeService {
   }
 
   private handleChildMessage(runtime: ManagedPluginRuntime, message: unknown) {
+    try {
+      assertIpcMessageWithinLimit(
+        message,
+        `Plugin '${runtime.pluginId}' IPC message`
+      );
+    } catch (error) {
+      runtime.logger.warn("Plugin runtime sent an oversized IPC message.", {
+        pluginId: runtime.pluginId,
+        messageBytes: estimateIpcMessageBytes(message)
+      });
+      void this.handleUnexpectedTermination(
+        runtime,
+        error instanceof Error
+          ? error
+          : new Error("Plugin runtime sent an oversized IPC message.")
+      );
+      return;
+    }
+
+    const brokerRequest = pluginRuntimeBrokerRequestSchema.safeParse(message);
+
+    if (brokerRequest.success) {
+      try {
+        assertSupportedProtocolVersion(brokerRequest.data.protocolVersion);
+      } catch (error) {
+        if (!runtime.child.connected) {
+          return;
+        }
+
+        runtime.child.send(
+          rpcResponseSchema.parse({
+            protocolVersion: pluginRuntimeProtocolVersion,
+            requestId: brokerRequest.data.requestId,
+            success: false,
+            error: {
+              code: "PLUGIN_RUNTIME_PROTOCOL_UNSUPPORTED",
+              message:
+                error instanceof PluginRuntimeProtocolError
+                  ? error.message
+                  : "Unsupported plugin runtime protocol version."
+            }
+          })
+        );
+        return;
+      }
+
+      void this.handleBrokerRequest(runtime, brokerRequest.data);
+      return;
+    }
+
     const parsedResponse = rpcResponseSchema.safeParse(message);
 
     if (!parsedResponse.success) {
@@ -650,6 +873,356 @@ export class PluginRuntimeService {
     }
 
     pending.resolve(parsedResponse.data);
+  }
+
+  private async handleBrokerRequest(
+    runtime: ManagedPluginRuntime,
+    request: PluginRuntimeBrokerRequest
+  ): Promise<void> {
+    if (!runtime.child.connected) {
+      return;
+    }
+
+    try {
+      switch (request.type) {
+        case "broker-check-permission": {
+          const broker = this.options.permissionBroker;
+
+          if (!broker) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_PERMISSION_BROKER_UNAVAILABLE",
+                  message: "Plugin permission broker is unavailable."
+                }
+              })
+            );
+            return;
+          }
+
+          runtime.child.send(
+            rpcResponseSchema.parse({
+              protocolVersion: pluginRuntimeProtocolVersion,
+              requestId: request.requestId,
+              success: true,
+              data: {
+                granted: broker.checkPermission({
+                  pluginId: request.pluginId,
+                  scope: request.scope as PermissionScope,
+                  ...(request.constraint
+                    ? { constraint: request.constraint }
+                    : {}),
+                  ...(request.sessionId ? { sessionId: request.sessionId } : {})
+                })
+              }
+            })
+          );
+          return;
+        }
+
+        case "broker-request-permission": {
+          const broker = this.options.permissionBroker;
+
+          if (!broker) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_PERMISSION_BROKER_UNAVAILABLE",
+                  message: "Plugin permission broker is unavailable."
+                }
+              })
+            );
+            return;
+          }
+
+          runtime.child.send(
+            rpcResponseSchema.parse({
+              protocolVersion: pluginRuntimeProtocolVersion,
+              requestId: request.requestId,
+              success: true,
+              data: {
+                decision: broker.requestPermission({
+                  pluginId: request.pluginId,
+                  scope: request.scope as PermissionScope,
+                  reason: request.reason,
+                  ...(request.constraint
+                    ? { constraint: request.constraint }
+                    : {}),
+                  ...(request.sessionId ? { sessionId: request.sessionId } : {})
+                })
+              }
+            })
+          );
+          return;
+        }
+
+        case "broker-read-configuration": {
+          const broker = this.options.configurationBroker;
+
+          if (!broker) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_CONFIGURATION_BROKER_UNAVAILABLE",
+                  message: "Plugin configuration broker is unavailable."
+                }
+              })
+            );
+            return;
+          }
+
+          runtime.child.send(
+            rpcResponseSchema.parse({
+              protocolVersion: pluginRuntimeProtocolVersion,
+              requestId: request.requestId,
+              success: true,
+              data: {
+                value: broker.getConfiguration({
+                  pluginId: request.pluginId,
+                  key: request.key
+                })
+              }
+            })
+          );
+          return;
+        }
+
+        case "broker-read-secret": {
+          if (
+            !this.options.permissionBroker?.checkPermission({
+              pluginId: request.pluginId,
+              scope: permissionScope("secrets.read")
+            })
+          ) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_SECRET_ACCESS_DENIED",
+                  message: "Plugin does not have secrets.read permission."
+                }
+              })
+            );
+            return;
+          }
+
+          const secretStore = this.options.secretStore;
+
+          if (!secretStore) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_SECRET_BROKER_UNAVAILABLE",
+                  message: "Plugin secret broker is unavailable."
+                }
+              })
+            );
+            return;
+          }
+
+          runtime.child.send(
+            rpcResponseSchema.parse({
+              protocolVersion: pluginRuntimeProtocolVersion,
+              requestId: request.requestId,
+              success: true,
+              data: {
+                value: await secretStore.get(request.pluginId, request.key)
+              }
+            })
+          );
+          return;
+        }
+
+        case "broker-write-secret": {
+          if (
+            !this.options.permissionBroker?.checkPermission({
+              pluginId: request.pluginId,
+              scope: permissionScope("secrets.write")
+            })
+          ) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_SECRET_ACCESS_DENIED",
+                  message: "Plugin does not have secrets.write permission."
+                }
+              })
+            );
+            return;
+          }
+
+          const secretStore = this.options.secretStore;
+
+          if (!secretStore) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_SECRET_BROKER_UNAVAILABLE",
+                  message: "Plugin secret broker is unavailable."
+                }
+              })
+            );
+            return;
+          }
+
+          await secretStore.set(request.pluginId, request.key, request.value);
+
+          runtime.child.send(
+            rpcResponseSchema.parse({
+              protocolVersion: pluginRuntimeProtocolVersion,
+              requestId: request.requestId,
+              success: true,
+              data: {}
+            })
+          );
+          return;
+        }
+
+        case "broker-delete-secret": {
+          if (
+            !this.options.permissionBroker?.checkPermission({
+              pluginId: request.pluginId,
+              scope: permissionScope("secrets.write")
+            })
+          ) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_SECRET_ACCESS_DENIED",
+                  message: "Plugin does not have secrets.write permission."
+                }
+              })
+            );
+            return;
+          }
+
+          const secretStore = this.options.secretStore;
+
+          if (!secretStore) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_SECRET_BROKER_UNAVAILABLE",
+                  message: "Plugin secret broker is unavailable."
+                }
+              })
+            );
+            return;
+          }
+
+          await secretStore.delete(request.pluginId, request.key);
+
+          runtime.child.send(
+            rpcResponseSchema.parse({
+              protocolVersion: pluginRuntimeProtocolVersion,
+              requestId: request.requestId,
+              success: true,
+              data: {}
+            })
+          );
+          return;
+        }
+
+        case "broker-list-secret-keys": {
+          if (
+            !this.options.permissionBroker?.checkPermission({
+              pluginId: request.pluginId,
+              scope: permissionScope("secrets.read")
+            })
+          ) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_SECRET_ACCESS_DENIED",
+                  message: "Plugin does not have secrets.read permission."
+                }
+              })
+            );
+            return;
+          }
+
+          const secretStore = this.options.secretStore;
+
+          if (!secretStore) {
+            runtime.child.send(
+              rpcResponseSchema.parse({
+                protocolVersion: pluginRuntimeProtocolVersion,
+                requestId: request.requestId,
+                success: false,
+                error: {
+                  code: "PLUGIN_SECRET_BROKER_UNAVAILABLE",
+                  message: "Plugin secret broker is unavailable."
+                }
+              })
+            );
+            return;
+          }
+
+          runtime.child.send(
+            rpcResponseSchema.parse({
+              protocolVersion: pluginRuntimeProtocolVersion,
+              requestId: request.requestId,
+              success: true,
+              data: {
+                keys: await secretStore.listKeys(request.pluginId)
+              }
+            })
+          );
+          return;
+        }
+
+        default: {
+          const exhaustiveRequest: never = request;
+          throw new Error(
+            `Unsupported plugin runtime broker request '${String(exhaustiveRequest)}'.`
+          );
+        }
+      }
+    } catch (error) {
+      runtime.child.send(
+        rpcResponseSchema.parse({
+          protocolVersion: pluginRuntimeProtocolVersion,
+          requestId: request.requestId,
+          success: false,
+          error: {
+            code: "PLUGIN_RUNTIME_BROKER_FAILED",
+            message:
+              error instanceof Error
+                ? error.message
+                : "Plugin runtime broker request failed."
+          }
+        })
+      );
+    }
   }
 
   private handleRuntimeFailure(
@@ -717,13 +1290,24 @@ export class PluginRuntimeService {
       status: "failed",
       healthy: false,
       lastError: errorMessage,
+      ...(this.startupDurations.get(runtime.pluginId) !== undefined
+        ? { startupDurationMs: this.startupDurations.get(runtime.pluginId) }
+        : {}),
       restartCount
     });
 
-    runtime.logger.error("Plugin runtime terminated unexpectedly.", error, {
-      pluginId: runtime.pluginId,
-      restartCount
-    });
+    logObservabilityEvent(
+      runtime.logger,
+      "error",
+      observabilityEvents.pluginFailed,
+      {
+        pluginId: runtime.pluginId,
+        processId: runtime.child.pid,
+        restartCount,
+        ...classifyError(error)
+      },
+      error
+    );
 
     if (this.getDesiredState(runtime.pluginId) !== "running") {
       return;
@@ -833,6 +1417,28 @@ export class PluginRuntimeService {
         reject,
         timeout
       });
+
+      try {
+        assertIpcMessageWithinLimit(
+          request,
+          `Plugin '${runtime.pluginId}' request '${request.requestId}'`
+        );
+      } catch (error) {
+        clearTimeout(timeout);
+        runtime.pendingResponses.delete(request.requestId);
+        reject(
+          new PluginRuntimeError(
+            "PLUGIN_RUNTIME_MESSAGE_TOO_LARGE",
+            error instanceof Error
+              ? error.message
+              : "IPC message is too large.",
+            413,
+            error
+          )
+        );
+        return;
+      }
+
       runtime.child.send(request, (error) => {
         if (!error) {
           return;
@@ -889,6 +1495,7 @@ export class PluginRuntimeService {
       readonly status: PluginRuntimeStatus;
       readonly healthy: boolean;
       readonly processId?: number;
+      readonly startupDurationMs?: number | undefined;
       readonly initializedAt?: string;
       readonly activatedAt?: string;
       readonly restartCount: number;

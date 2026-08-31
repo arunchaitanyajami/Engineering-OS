@@ -12,14 +12,33 @@ Plugins are the only supported way to integrate external systems into Engineerin
 - testable in isolation
 - MCP compatible where possible
 
-## Planned Building Blocks
+## Shipped Building Blocks
 
-- plugin manifest
-- plugin permissions model
-- plugin loader
-- tool, resource, and prompt registration
-- enable and disable lifecycle
+- `engineering-os.plugin.json` manifest and runtime validation
+- local package discovery, compatibility checks, and SQLite registry
+- capability-based permission grants and namespaced secrets
+- out-of-process Node runtime with versioned RPC
+- plugin lifecycle hooks: `initialize`, `activate`, `deactivate`, and `dispose`
+- MCP server registration through the Engineering OS gateway
+
+Plugins are not imported into the desktop process. A managed installation is
+started only after the package has been inspected, validated, and enabled. The
+backend supervises the child process, exposes health and restart diagnostics,
+and stops it before disable or uninstall.
+
+## Package Layout
+
+Every plugin declares a backend entrypoint, normally
+`dist/backend/index.js`, in `engineering-os.plugin.json`. MCP-enabled plugins
+declare `stdio` servers in the manifest; those servers are started and accessed
+through `@engineering-os/mcp-gateway`.
 
 ## Reference Path
 
-The first reference connector is the filesystem plugin planned for Milestone 2.
+Reference implementations are available in:
+
+- `plugins/example-plugin`
+- `plugins/example-mcp-plugin`
+
+See their READMEs for local registration, permissions, lifecycle behavior, and
+MCP tool examples.

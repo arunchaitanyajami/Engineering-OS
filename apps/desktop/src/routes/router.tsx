@@ -37,6 +37,36 @@ const CreateSessionRoute = lazy(() =>
     default: module.CreateSessionRoute
   }))
 );
+const PluginsScreen = lazy(() =>
+  import("../features/plugins/plugins-screen").then((module) => ({
+    default: module.PluginsScreen
+  }))
+);
+const PluginDetailScreen = lazy(() =>
+  import("../features/plugins/plugin-detail-screen").then((module) => ({
+    default: module.PluginDetailScreen
+  }))
+);
+const McpServersScreen = lazy(() =>
+  import("../features/mcp/mcp-servers-screen").then((module) => ({
+    default: module.McpServersScreen
+  }))
+);
+const McpServerDetailScreen = lazy(() =>
+  import("../features/mcp/mcp-server-detail-screen").then((module) => ({
+    default: module.McpServerDetailScreen
+  }))
+);
+const ToolTestConsoleScreen = lazy(() =>
+  import("../features/mcp/tool-test-console-screen").then((module) => ({
+    default: module.ToolTestConsoleScreen
+  }))
+);
+const PermissionsScreen = lazy(() =>
+  import("../features/permissions/permissions-screen").then((module) => ({
+    default: module.PermissionsScreen
+  }))
+);
 
 const withSuspense = (element: ReactNode) => (
   <Suspense
@@ -88,12 +118,27 @@ const router = createBrowserRouter([
       },
       {
         path: "plugins",
-        element: (
-          <FutureFeatureScreen
-            description="Plugin SDK and installation flow arrive in Milestone 2."
-            title="Plugins"
-          />
-        )
+        element: withSuspense(<PluginsScreen />)
+      },
+      {
+        path: "plugins/:pluginId",
+        element: withSuspense(<PluginDetailScreen />)
+      },
+      {
+        path: "permissions",
+        element: withSuspense(<PermissionsScreen />)
+      },
+      {
+        path: "mcp/servers",
+        element: withSuspense(<McpServersScreen />)
+      },
+      {
+        path: "mcp/servers/:registrationId",
+        element: withSuspense(<McpServerDetailScreen />)
+      },
+      {
+        path: "mcp/tool-console",
+        element: withSuspense(<ToolTestConsoleScreen />)
       },
       {
         path: "workflows",
@@ -116,6 +161,18 @@ const router = createBrowserRouter([
       {
         path: "settings",
         element: withSuspense(<SettingsScreen />)
+      },
+      {
+        path: "settings/plugins",
+        element: <Navigate replace to="/plugins" />
+      },
+      {
+        path: "settings/mcp-servers",
+        element: <Navigate replace to="/mcp/servers" />
+      },
+      {
+        path: "settings/permissions",
+        element: <Navigate replace to="/permissions" />
       },
       {
         path: "*",

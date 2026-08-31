@@ -1,23 +1,44 @@
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
   pluginId,
   pluginManifestSchema,
+  type PermissionScope,
   type PluginManifest
 } from "@engineering-os/contracts";
 import {
+  checkPluginPermissionBrokerResponseSchema,
+  pluginRuntimeBrokerRequestSchema,
   pluginRuntimeHealthSnapshotSchema,
   pluginRuntimeRequestSchema,
   pluginRuntimeProtocolVersion,
+  readConfigurationResponseSchema,
+  readPluginConfigurationBrokerResponseSchema,
+  readPluginSecretBrokerResponseSchema,
+  listPluginSecretKeysBrokerResponseSchema,
+  requestPluginPermissionBrokerResponseSchema,
   rpcResponseSchema,
   type EngineeringOsPlugin,
   type EngineeringOsPluginContext,
+  type PermissionGrantDecision,
+  type PluginRuntimeBrokerRequest,
   type PluginRuntimeRequest,
   type PluginRuntimeStatus,
   type RpcError
 } from "@engineering-os/contracts/unstable-runtime";
 import { calculateManagedInstallationHash } from "@engineering-os/plugin-registry";
+
+import {
+  assertIpcMessageWithinLimit,
+  estimateIpcMessageBytes
+} from "./ipc-message-size.js";
+import {
+  assertSupportedProtocolVersion,
+  PluginRuntimeProtocolError,
+  readProtocolVersion
+} from "./protocol.js";
 
 interface RuntimePluginState {
   pluginId: string | null;
@@ -38,10 +59,159 @@ const state: RuntimePluginState = {
   status: "stopped"
 };
 
+interface PendingBrokerResponse {
+  readonly resolve: (value: unknown) => void;
+  readonly reject: (error: unknown) => void;
+  readonly timeout: ReturnType<typeof setTimeout>;
+}
+
+const pendingBrokerResponses = new Map<string, PendingBrokerResponse>();
+
+const BROKER_REQUEST_TIMEOUT_MS = 5_000;
+
 const createUnsupportedMilestone23Error = (apiName: string) =>
   new Error(
     `${apiName} is not available in Milestone 2.3. Trusted local plugins run out of process, but process isolation is not a security sandbox yet.`
   );
+
+const sendBrokerRequest = async (
+  request: PluginRuntimeBrokerRequest
+): Promise<unknown> => {
+  if (!process.send) {
+    throw new Error("Plugin runtime broker is unavailable in this worker.");
+  }
+
+  return new Promise((resolve, reject) => {
+    const timeout = globalThis.setTimeout(() => {
+      pendingBrokerResponses.delete(request.requestId);
+      reject(new Error("Plugin runtime broker request timed out."));
+    }, BROKER_REQUEST_TIMEOUT_MS);
+
+    pendingBrokerResponses.set(request.requestId, {
+      resolve,
+      reject,
+      timeout
+    });
+
+    try {
+      assertIpcMessageWithinLimit(request, "Plugin runtime broker IPC request");
+    } catch (error) {
+      clearTimeout(timeout);
+      pendingBrokerResponses.delete(request.requestId);
+      reject(error);
+      return;
+    }
+
+    process.send?.(request, (error) => {
+      if (!error) {
+        return;
+      }
+
+      clearTimeout(timeout);
+      pendingBrokerResponses.delete(request.requestId);
+      reject(error);
+    });
+  });
+};
+
+const createConfigurationApi =
+  (): EngineeringOsPluginContext["configuration"] => ({
+    async get<TValue>(key: string): Promise<TValue | null> {
+      if (!state.pluginId) {
+        return null;
+      }
+
+      const response = await sendBrokerRequest(
+        pluginRuntimeBrokerRequestSchema.parse({
+          protocolVersion: pluginRuntimeProtocolVersion,
+          type: "broker-read-configuration",
+          requestId: randomUUID(),
+          pluginId: state.pluginId,
+          key
+        })
+      );
+
+      return readPluginConfigurationBrokerResponseSchema.parse(response)
+        .value as TValue | null;
+    },
+    async set() {
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin configuration persistence")
+      );
+    },
+    async delete() {
+      return Promise.reject(
+        createUnsupportedMilestone23Error("Plugin configuration persistence")
+      );
+    }
+  });
+
+const createSecretsApi = (): EngineeringOsPluginContext["secrets"] => ({
+  async get(key) {
+    if (!state.pluginId) {
+      return null;
+    }
+
+    const response = await sendBrokerRequest(
+      pluginRuntimeBrokerRequestSchema.parse({
+        protocolVersion: pluginRuntimeProtocolVersion,
+        type: "broker-read-secret",
+        requestId: randomUUID(),
+        pluginId: state.pluginId,
+        key
+      })
+    );
+
+    return readPluginSecretBrokerResponseSchema.parse(response).value;
+  },
+  async set(key, value) {
+    if (!state.pluginId) {
+      throw new Error("Plugin secret storage is unavailable.");
+    }
+
+    await sendBrokerRequest(
+      pluginRuntimeBrokerRequestSchema.parse({
+        protocolVersion: pluginRuntimeProtocolVersion,
+        type: "broker-write-secret",
+        requestId: randomUUID(),
+        pluginId: state.pluginId,
+        key,
+        value
+      })
+    );
+  },
+  async delete(key) {
+    if (!state.pluginId) {
+      return;
+    }
+
+    await sendBrokerRequest(
+      pluginRuntimeBrokerRequestSchema.parse({
+        protocolVersion: pluginRuntimeProtocolVersion,
+        type: "broker-delete-secret",
+        requestId: randomUUID(),
+        pluginId: state.pluginId,
+        key
+      })
+    );
+  },
+  async listKeys() {
+    if (!state.pluginId) {
+      return [];
+    }
+
+    const response = await sendBrokerRequest(
+      pluginRuntimeBrokerRequestSchema.parse({
+        protocolVersion: pluginRuntimeProtocolVersion,
+        type: "broker-list-secret-keys",
+        requestId: randomUUID(),
+        pluginId: state.pluginId
+      })
+    );
+
+    return listPluginSecretKeysBrokerResponseSchema.parse(response).keys;
+  }
+});
 
 const createContext = (
   manifest: PluginManifest
@@ -75,45 +245,8 @@ const createContext = (
       );
     }
   },
-  configuration: {
-    async get() {
-      return Promise.reject(
-        createUnsupportedMilestone23Error("Plugin configuration access")
-      );
-    },
-    async set() {
-      return Promise.reject(
-        createUnsupportedMilestone23Error("Plugin configuration persistence")
-      );
-    },
-    async delete() {
-      return Promise.reject(
-        createUnsupportedMilestone23Error("Plugin configuration persistence")
-      );
-    }
-  },
-  secrets: {
-    async get() {
-      return Promise.reject(
-        createUnsupportedMilestone23Error("Plugin secret storage")
-      );
-    },
-    async set() {
-      return Promise.reject(
-        createUnsupportedMilestone23Error("Plugin secret storage")
-      );
-    },
-    async delete() {
-      return Promise.reject(
-        createUnsupportedMilestone23Error("Plugin secret storage")
-      );
-    },
-    async listKeys() {
-      return Promise.reject(
-        createUnsupportedMilestone23Error("Plugin secret storage")
-      );
-    }
-  },
+  configuration: createConfigurationApi(),
+  secrets: createSecretsApi(),
   storage: {
     async get() {
       return Promise.reject(
@@ -137,15 +270,47 @@ const createContext = (
     }
   },
   permissions: {
-    async has() {
-      return Promise.reject(
-        createUnsupportedMilestone23Error("Plugin permission broker")
+    async has(scope: PermissionScope, constraint?: Record<string, unknown>) {
+      if (!state.pluginId) {
+        return false;
+      }
+
+      const response = await sendBrokerRequest(
+        pluginRuntimeBrokerRequestSchema.parse({
+          protocolVersion: pluginRuntimeProtocolVersion,
+          type: "broker-check-permission",
+          requestId: randomUUID(),
+          pluginId: state.pluginId,
+          scope,
+          ...(constraint ? { constraint } : {})
+        })
       );
+
+      return checkPluginPermissionBrokerResponseSchema.parse(response).granted;
     },
-    async request() {
-      return Promise.reject(
-        createUnsupportedMilestone23Error("Plugin permission broker")
+    async request(
+      scope: PermissionScope,
+      reason: string,
+      constraint?: Record<string, unknown>
+    ): Promise<PermissionGrantDecision> {
+      if (!state.pluginId) {
+        return "deny";
+      }
+
+      const response = await sendBrokerRequest(
+        pluginRuntimeBrokerRequestSchema.parse({
+          protocolVersion: pluginRuntimeProtocolVersion,
+          type: "broker-request-permission",
+          requestId: randomUUID(),
+          pluginId: state.pluginId,
+          scope,
+          reason,
+          ...(constraint ? { constraint } : {})
+        })
       );
+
+      return requestPluginPermissionBrokerResponseSchema.parse(response)
+        .decision;
     }
   },
   events: {
@@ -203,23 +368,54 @@ const sendResponse = (
     return;
   }
 
-  process.send(
-    rpcResponseSchema.parse({
-      protocolVersion: pluginRuntimeProtocolVersion,
-      requestId,
-      ...response
-    })
-  );
+  const payload = rpcResponseSchema.parse({
+    protocolVersion: pluginRuntimeProtocolVersion,
+    requestId,
+    ...response
+  });
+
+  try {
+    assertIpcMessageWithinLimit(payload, "Plugin runtime IPC response");
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        message: "Plugin runtime refused to send an oversized IPC response.",
+        requestId,
+        messageBytes: estimateIpcMessageBytes(payload),
+        error: error instanceof Error ? error.message : error
+      })
+    );
+    return;
+  }
+
+  process.send(payload);
 };
 
-const asRpcError = (error: unknown): RpcError => ({
-  code:
-    error instanceof Error && error.name
-      ? error.name.toUpperCase()
-      : "PLUGIN_RUNTIME_ERROR",
-  message:
-    error instanceof Error ? error.message : "Plugin runtime request failed."
-});
+const asRpcError = (error: unknown): RpcError => {
+  if (error instanceof PluginRuntimeProtocolError) {
+    return {
+      code: "PLUGIN_RUNTIME_PROTOCOL_UNSUPPORTED",
+      message: error.message
+    };
+  }
+
+  return {
+    code:
+      error instanceof Error && error.name
+        ? error.name.toUpperCase()
+        : "PLUGIN_RUNTIME_ERROR",
+    message:
+      error instanceof Error ? error.message : "Plugin runtime request failed."
+  };
+};
+
+class PluginRuntimeCapabilityUnsupportedError extends Error {
+  constructor(capability: string) {
+    super(`Plugin capability '${capability}' is not supported.`);
+    this.name = "PLUGIN_RUNTIME_CAPABILITY_UNSUPPORTED";
+  }
+}
 
 const resolvePluginExport = (moduleExports: Record<string, unknown>) => {
   const candidate = (moduleExports.default ?? moduleExports.plugin) as
@@ -366,10 +562,23 @@ const handleRequest = async (request: PluginRuntimeRequest) => {
       return snapshot;
     }
 
-    case "read-configuration":
+    case "read-configuration": {
+      ensureRequestTargetsInitializedPlugin(request.pluginId);
+
+      const value = await createConfigurationApi().get(request.key);
+
+      return readConfigurationResponseSchema.parse({ value });
+    }
+
     case "invoke-plugin-capability": {
+      ensureRequestTargetsInitializedPlugin(request.pluginId);
+      throw new PluginRuntimeCapabilityUnsupportedError(request.capability);
+    }
+
+    default: {
+      const exhaustiveRequest: never = request;
       throw new Error(
-        `Plugin runtime request '${request.type}' is not implemented in Milestone 2.3.`
+        `Plugin runtime request '${String(exhaustiveRequest)}' is not supported.`
       );
     }
   }
@@ -401,6 +610,52 @@ const handleShutdownSignal = async (signal: string) => {
 
 export const runPluginRuntimeWorker = () => {
   process.on("message", (message) => {
+    const parsedResponse = rpcResponseSchema.safeParse(message);
+
+    if (parsedResponse.success) {
+      const pending = pendingBrokerResponses.get(parsedResponse.data.requestId);
+
+      if (pending) {
+        clearTimeout(pending.timeout);
+        pendingBrokerResponses.delete(parsedResponse.data.requestId);
+
+        if (!parsedResponse.data.success) {
+          pending.reject(
+            new Error(
+              parsedResponse.data.error?.message ??
+                "Plugin runtime broker request failed."
+            )
+          );
+          return;
+        }
+
+        pending.resolve(parsedResponse.data.data);
+        return;
+      }
+    }
+
+    const protocolVersion = readProtocolVersion(message);
+
+    if (protocolVersion !== undefined) {
+      try {
+        assertSupportedProtocolVersion(protocolVersion);
+      } catch (error) {
+        const requestId =
+          typeof message === "object" &&
+          message !== null &&
+          "requestId" in message &&
+          typeof (message as { requestId: unknown }).requestId === "string"
+            ? (message as { requestId: string }).requestId
+            : "unknown-request";
+
+        sendResponse(requestId, {
+          success: false,
+          error: asRpcError(error)
+        });
+        return;
+      }
+    }
+
     const parsedRequest = pluginRuntimeRequestSchema.safeParse(message);
 
     if (!parsedRequest.success) {

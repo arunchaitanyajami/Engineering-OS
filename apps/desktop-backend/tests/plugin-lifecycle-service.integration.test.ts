@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { ApplicationDatabase } from "@engineering-os/database";
 import { createLogger } from "@engineering-os/logger";
+import { McpGatewayService } from "@engineering-os/mcp-gateway";
 import {
   PluginRegistryService,
   SqlitePluginRegistryRepository,
@@ -17,9 +18,84 @@ import {
   type PluginRuntimeServiceOptions
 } from "@engineering-os/plugin-runtime";
 
+import {
+  PermissionEngineService,
+  SqlitePermissionGrantRepository
+} from "@engineering-os/permission-engine";
+
 import { PluginLifecycleService } from "../src/plugin-lifecycle-service.js";
 
 const projectRootPath = fileURLToPath(new URL("../../..", import.meta.url));
+const defaultMcpServerScript = `
+  let buffer = "";
+
+  const writeMessage = (message) => {
+    process.stdout.write(JSON.stringify(message) + "\\n");
+  };
+
+  const handleMessage = (message) => {
+    if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") {
+      return;
+    }
+
+    switch (message.method) {
+      case "initialize":
+        writeMessage({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            protocolVersion: message.params?.protocolVersion ?? "2025-06-18",
+            capabilities: {
+              tools: {}
+            },
+            serverInfo: {
+              name: "lifecycle-mcp-server",
+              version: "1.0.0"
+            }
+          }
+        });
+        return;
+      case "notifications/initialized":
+        return;
+      case "tools/list":
+        writeMessage({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            tools: []
+          }
+        });
+        return;
+      default:
+        return;
+    }
+  };
+
+  process.stdin.on("data", (chunk) => {
+    buffer += chunk.toString("utf8");
+
+    while (true) {
+      const newlineIndex = buffer.indexOf("\\n");
+
+      if (newlineIndex === -1) {
+        break;
+      }
+
+      const line = buffer.slice(0, newlineIndex).replace(/\\r$/, "");
+      buffer = buffer.slice(newlineIndex + 1);
+
+      if (!line.trim()) {
+        continue;
+      }
+
+      handleMessage(JSON.parse(line));
+    }
+  });
+
+  process.on("SIGTERM", () => {
+    process.exit(0);
+  });
+`;
 
 const createRuntimePluginPackage = async (
   rootDirectory: string,
@@ -27,6 +103,14 @@ const createRuntimePluginPackage = async (
     readonly pluginId?: string;
     readonly backendModuleSource?: string;
     readonly crashMarkerPath?: string;
+    readonly mcp?: readonly {
+      readonly id: string;
+      readonly cwd: string;
+      readonly command?: string;
+      readonly args?: readonly string[];
+      readonly timeoutMs?: number;
+      readonly serverScript?: string;
+    }[];
   } = {}
 ) => {
   const packageDirectory = await mkdtemp(
@@ -47,12 +131,39 @@ const createRuntimePluginPackage = async (
     entrypoints: {
       backend: "./dist/backend/index.js"
     },
-    capabilities: [],
-    permissions: [],
-    mcp: []
+    capabilities: options.mcp?.length ? ["mcp-server"] : [],
+    permissions: options.mcp?.length
+      ? [
+          {
+            scope: "process.spawn",
+            reason: "Launches bundled MCP servers for lifecycle tests."
+          },
+          {
+            scope: "mcp.register-server",
+            reason: "Registers bundled MCP servers for lifecycle tests."
+          }
+        ]
+      : [],
+    mcp:
+      options.mcp?.map((server) => ({
+        id: server.id,
+        transport: "stdio" as const,
+        command: server.command ?? "node",
+        args: server.args ?? ["./index.js"],
+        cwd: server.cwd,
+        timeoutMs: server.timeoutMs ?? 10_000
+      })) ?? []
   };
 
   await mkdir(join(packageDirectory, "dist/backend"), { recursive: true });
+  for (const server of options.mcp ?? []) {
+    await mkdir(join(packageDirectory, server.cwd), { recursive: true });
+    await writeFile(
+      join(packageDirectory, server.cwd, "index.js"),
+      server.serverScript ?? defaultMcpServerScript,
+      "utf8"
+    );
+  }
   await writeFile(
     join(packageDirectory, localPluginManifestFileNames[0]),
     JSON.stringify(manifest, null, 2),
@@ -131,7 +242,7 @@ describe("PluginLifecycleService", () => {
     const pluginRegistry = new PluginRegistryService({
       repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "plugin-lifecycle-test" }),
-      engineeringOsVersion: "0.1.0",
+      engineeringOsVersion: "0.2.0",
       installationsRootPath
     });
     const workerWrapperPath = join(
@@ -169,16 +280,50 @@ describe("PluginLifecycleService", () => {
         ? { onBeforeRuntimeSpawn: options.onBeforeRuntimeSpawn }
         : {})
     });
+    const mcpGateway = new McpGatewayService({
+      installedPlugins: pluginRegistry,
+      logger: createLogger({ component: "plugin-lifecycle-test" }),
+      startupTimeoutMs: 200,
+      startupStabilityPeriodMs: 50
+    });
+    const permissionEngine = new PermissionEngineService({
+      installedPlugins: pluginRegistry,
+      repository: new SqlitePermissionGrantRepository(database),
+      logger: createLogger({ component: "plugin-lifecycle-test" })
+    });
     const pluginLifecycle = new PluginLifecycleService({
       pluginRegistry,
-      pluginRuntime
+      pluginRuntime,
+      mcpGateway,
+      permissionEngine
     });
+
+    const grantAllPermissions = (pluginId: string) => {
+      const review = permissionEngine.getPermissionReview(pluginId);
+
+      if (review.pendingRequirements.length === 0) {
+        return;
+      }
+
+      permissionEngine.grantPermissions({
+        pluginId,
+        grants: review.pendingRequirements.map((requirement) => ({
+          scope: requirement.scope,
+          decision: "always-allow" as const,
+          ...(requirement.constraint
+            ? { constraint: requirement.constraint }
+            : {})
+        }))
+      });
+    };
 
     return {
       fixturesDirectory,
+      mcpGateway,
       pluginRegistry,
       pluginRuntime,
-      pluginLifecycle
+      pluginLifecycle,
+      grantAllPermissions
     };
   };
 
@@ -191,7 +336,8 @@ describe("PluginLifecycleService", () => {
       fixturesDirectory,
       pluginRegistry,
       pluginRuntime,
-      pluginLifecycle
+      pluginLifecycle,
+      grantAllPermissions
     } = await createServices({
       onBeforeRuntimeSpawn: async () => {
         await startGate;
@@ -237,7 +383,8 @@ describe("PluginLifecycleService", () => {
       fixturesDirectory,
       pluginRegistry,
       pluginRuntime,
-      pluginLifecycle
+      pluginLifecycle,
+      grantAllPermissions
     } = await createServices({
       restartBackoffMs: 250
     });
@@ -315,5 +462,165 @@ describe("PluginLifecycleService", () => {
     expect(
       pluginRuntime.getRuntimeHealth(installedPlugin.pluginId).status
     ).not.toBe("running");
+  });
+
+  it("keeps plugin-owned MCP disable and start atomic under concurrent requests", async () => {
+    const {
+      fixturesDirectory,
+      mcpGateway,
+      pluginRegistry,
+      pluginLifecycle,
+      grantAllPermissions
+    } = await createServices();
+    const packageDirectory = await createRuntimePluginPackage(
+      fixturesDirectory,
+      {
+        pluginId: "com.engineering-os.lifecycle-mcp-race",
+        mcp: [
+          {
+            id: "filesystem",
+            cwd: "servers/filesystem"
+          }
+        ]
+      }
+    );
+    const installedPlugin =
+      await pluginRegistry.registerLocalPluginPackage(packageDirectory);
+
+    grantAllPermissions(installedPlugin.pluginId);
+    await pluginLifecycle.enablePlugin(installedPlugin.pluginId);
+
+    const registrationId = `${installedPlugin.pluginId}:filesystem`;
+    const startPromise = pluginLifecycle.startPluginMcpServer(
+      installedPlugin.pluginId,
+      registrationId
+    );
+    const disablePromise = pluginLifecycle.disablePlugin(
+      installedPlugin.pluginId
+    );
+
+    const results = await Promise.allSettled([startPromise, disablePromise]);
+
+    expect(results.some((result) => result.status === "fulfilled")).toBe(true);
+    expect(
+      pluginRegistry.getInstalledPlugin(installedPlugin.pluginId)?.enabled
+    ).toBe(false);
+    expect(mcpGateway.inspectServerHealth(registrationId).healthState).not.toBe(
+      "healthy"
+    );
+  });
+
+  it("releases the plugin lifecycle lock when plugin-owned MCP discovery times out", async () => {
+    const {
+      fixturesDirectory,
+      mcpGateway,
+      pluginRegistry,
+      pluginLifecycle,
+      grantAllPermissions
+    } = await createServices();
+    const packageDirectory = await createRuntimePluginPackage(
+      fixturesDirectory,
+      {
+        pluginId: "com.engineering-os.lifecycle-mcp-timeout",
+        mcp: [
+          {
+            id: "filesystem",
+            cwd: "servers/filesystem",
+            serverScript: `
+              let buffer = "";
+
+              const writeMessage = (message) => {
+                process.stdout.write(JSON.stringify(message) + "\\n");
+              };
+
+              const handleMessage = (message) => {
+                if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") {
+                  return;
+                }
+
+                switch (message.method) {
+                  case "initialize":
+                    writeMessage({
+                      jsonrpc: "2.0",
+                      id: message.id,
+                      result: {
+                        protocolVersion: message.params?.protocolVersion ?? "2025-06-18",
+                        capabilities: {
+                          tools: {}
+                        },
+                        serverInfo: {
+                          name: "lifecycle-mcp-timeout",
+                          version: "1.0.0"
+                        }
+                      }
+                    });
+                    return;
+                  case "notifications/initialized":
+                    return;
+                  case "tools/list":
+                    return;
+                  default:
+                    return;
+                }
+              };
+
+              process.stdin.on("data", (chunk) => {
+                buffer += chunk.toString("utf8");
+
+                while (true) {
+                  const newlineIndex = buffer.indexOf("\\n");
+
+                  if (newlineIndex === -1) {
+                    break;
+                  }
+
+                  const line = buffer.slice(0, newlineIndex).replace(/\\r$/, "");
+                  buffer = buffer.slice(newlineIndex + 1);
+
+                  if (!line.trim()) {
+                    continue;
+                  }
+
+                  handleMessage(JSON.parse(line));
+                }
+              });
+
+              process.on("SIGTERM", () => {
+                process.exit(0);
+              });
+            `
+          }
+        ]
+      }
+    );
+    const installedPlugin =
+      await pluginRegistry.registerLocalPluginPackage(packageDirectory);
+
+    grantAllPermissions(installedPlugin.pluginId);
+    await pluginLifecycle.enablePlugin(installedPlugin.pluginId);
+
+    const registrationId = `${installedPlugin.pluginId}:filesystem`;
+    const startPromise = pluginLifecycle.startPluginMcpServer(
+      installedPlugin.pluginId,
+      registrationId
+    );
+    const disablePromise = pluginLifecycle.disablePlugin(
+      installedPlugin.pluginId
+    );
+
+    await expect(startPromise).rejects.toMatchObject({
+      code: "MCP_GATEWAY_SERVER_START_FAILED"
+    });
+    await expect(disablePromise).resolves.toMatchObject({
+      enabled: false
+    });
+
+    expect(mcpGateway.inspectServerHealth(registrationId)).toMatchObject({
+      healthState: "unknown",
+      discoveryStatus: "failed"
+    });
+    expect(
+      pluginRegistry.getInstalledPlugin(installedPlugin.pluginId)?.enabled
+    ).toBe(false);
   });
 });

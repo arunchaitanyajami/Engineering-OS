@@ -21,8 +21,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { semanticVersionSchema } from "@engineering-os/contracts";
 import {
+  grantPluginPermissionsRequestSchema,
   mcpToolExecutionControlRequestSchema,
   mcpServerRegistrationSchema,
+  pluginRuntimeInvokeCapabilityRequestSchema,
+  pluginRuntimeReadConfigurationRequestSchema,
+  revokePluginPermissionRequestSchema,
+  secretStoreDeleteRequestSchema,
+  secretStoreSetRequestSchema,
+  setToolPolicyRequestSchema,
   toolExecutionRequestSchema
 } from "@engineering-os/contracts/unstable-runtime";
 import {
@@ -31,7 +38,12 @@ import {
   type LogTransport
 } from "@engineering-os/logger";
 import {
+  logObservabilityEvent,
+  observabilityEvents
+} from "@engineering-os/observability";
+import {
   FileMcpUserRegistrationStore,
+  McpUserRegistrationStoreError,
   type McpUserRegistrationStore,
   McpGatewayError,
   McpGatewayService
@@ -46,6 +58,20 @@ import {
   PluginRegistryService,
   SqlitePluginRegistryRepository
 } from "@engineering-os/plugin-registry";
+import {
+  AuditService,
+  PermissionEngineError,
+  PermissionEngineService,
+  SqliteAuditRepository,
+  SqlitePermissionGrantRepository,
+  SqliteToolPolicyRepository,
+  ToolSafetyService
+} from "@engineering-os/permission-engine";
+import {
+  createApplicationSecretStore,
+  SecretService,
+  SecretServiceError
+} from "@engineering-os/security/server";
 import {
   ApplicationDatabase,
   type ApplicationDatabaseHealth
@@ -78,6 +104,7 @@ const MAX_PLUGIN_PACKAGE_PATH_BYTES = 8 * 1024;
 const SHUTDOWN_TIMEOUT_MS = 1_000;
 const READY_MESSAGE_PREFIX = "ENGINEERING_OS_BACKEND_READY ";
 const PLUGINS_DIRECTORY_NAME = "plugins";
+const SECRETS_DIRECTORY_NAME = "secrets";
 const ALLOWED_TAURI_ORIGINS = new Set([
   "tauri://localhost",
   "http://tauri.localhost",
@@ -97,6 +124,13 @@ const registerLocalPluginRequestSchema = z
 const pluginRuntimeControlRequestSchema = z
   .object({
     pluginId: z.string().trim().min(1).max(256)
+  })
+  .strict();
+
+const pluginEnableRequestSchema = z
+  .object({
+    pluginId: z.string().trim().min(1).max(256),
+    sessionId: z.string().trim().min(1).optional()
   })
   .strict();
 
@@ -126,6 +160,10 @@ export interface BackendContext {
   readonly pluginRegistry: PluginRegistryService;
   readonly pluginRuntime: PluginRuntimeService;
   readonly pluginLifecycle: PluginLifecycleService;
+  readonly permissionEngine: PermissionEngineService;
+  readonly auditService: AuditService;
+  readonly secretService: SecretService;
+  readonly toolSafety: ToolSafetyService;
   readonly logger: ReturnType<typeof createLogger>;
   flushLogs(): Promise<void>;
 }
@@ -305,20 +343,47 @@ const asPublicError = (
       ? new BackendPublicError(error.code, error.message, error.statusCode, {
           cause: error.cause ?? error
         })
-      : error instanceof PluginRuntimeError
+      : error instanceof McpUserRegistrationStoreError
         ? new BackendPublicError(error.code, error.message, error.statusCode, {
             cause: error.cause ?? error
           })
-        : error instanceof BackendPublicError
-          ? error
-          : new BackendPublicError(
-              fallbackCode,
-              fallbackMessage,
-              fallbackStatusCode,
+        : error instanceof PluginRuntimeError
+          ? new BackendPublicError(
+              error.code,
+              error.message,
+              error.statusCode,
               {
-                cause: error
+                cause: error.cause ?? error
               }
-            );
+            )
+          : error instanceof PermissionEngineError
+            ? new BackendPublicError(
+                error.code,
+                error.message,
+                error.statusCode,
+                {
+                  cause: error.cause ?? error
+                }
+              )
+            : error instanceof SecretServiceError
+              ? new BackendPublicError(
+                  error.code,
+                  error.message,
+                  error.statusCode,
+                  {
+                    cause: error.cause ?? error
+                  }
+                )
+              : error instanceof BackendPublicError
+                ? error
+                : new BackendPublicError(
+                    fallbackCode,
+                    fallbackMessage,
+                    fallbackStatusCode,
+                    {
+                      cause: error
+                    }
+                  );
 
 const atomicWriteFile = async (
   path: string,
@@ -389,6 +454,59 @@ const appendJsonLine = async (
   await ensureDirectory(dirname(path));
   const serialized = `${JSON.stringify(value)}\n`;
   await writeFile(path, serialized, { encoding: "utf8", flag: "a" });
+};
+
+const persistedLogEntrySchema = z
+  .object({
+    timestamp: z.string().min(1),
+    level: z.enum(["trace", "debug", "info", "warn", "error"]),
+    scope: z.string().min(1),
+    message: z.string().min(1),
+    context: z.record(z.unknown()).optional(),
+    correlationId: z.string().min(1).optional()
+  })
+  .strict();
+
+const readPersistedLogEntries = async (
+  path: string,
+  options: {
+    readonly limit: number;
+    readonly pluginId?: string;
+    readonly registrationId?: string;
+  }
+): Promise<readonly PersistedLogEntry[]> => {
+  let serialized: string;
+
+  try {
+    serialized = await readFile(path, "utf8");
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return [];
+    }
+    throw error;
+  }
+
+  const entries = serialized
+    .split("\n")
+    .reverse()
+    .map((line) => {
+      try {
+        return persistedLogEntrySchema.parse(JSON.parse(line));
+      } catch {
+        return null;
+      }
+    })
+    .filter((entry): entry is PersistedLogEntry => entry !== null)
+    .filter((entry) => {
+      const context = entry.context;
+      return (
+        (!options.pluginId || context?.pluginId === options.pluginId) &&
+        (!options.registrationId ||
+          context?.registrationId === options.registrationId)
+      );
+    });
+
+  return entries.slice(0, options.limit);
 };
 
 const createLocalServicesStatus = (
@@ -773,17 +891,38 @@ export const createBackendContext = async (
     MCP_USER_REGISTRATIONS_FILE_NAME
   );
   const pluginsDirectoryPath = join(appDataDirectory, PLUGINS_DIRECTORY_NAME);
+  const secretsDirectoryPath = join(appDataDirectory, SECRETS_DIRECTORY_NAME);
   const fileLogTransport = new FileLogTransport(logFilePath);
 
   await ensureDirectory(appDataDirectory);
   await ensureDirectory(join(appDataDirectory, LOG_DIRECTORY_NAME));
   await ensureDirectory(pluginsDirectoryPath);
+  await ensureDirectory(secretsDirectoryPath);
 
   const logger = createLogger({
     component: "desktop-backend",
     transport: fileLogTransport
   });
   const database = new ApplicationDatabase(databaseFilePath, logger);
+  database.runMigrations();
+  const auditRepository = new SqliteAuditRepository(database);
+  const auditService = new AuditService(auditRepository);
+  const secretService = await createApplicationSecretStore({
+    secretsDirectory: secretsDirectoryPath,
+    audit: {
+      record: (input) => {
+        auditService.record({
+          actorType: "system",
+          action: input.action,
+          resourceType: "secret",
+          resourceId: input.namespace,
+          outcome: input.outcome === "success" ? "success" : "failure",
+          correlationId: input.namespace,
+          ...(input.key ? { metadata: { key: input.key } } : {})
+        });
+      }
+    }
+  });
   const pluginRegistryRepository = new SqlitePluginRegistryRepository(database);
   const pluginRegistry = new PluginRegistryService({
     repository: pluginRegistryRepository,
@@ -794,21 +933,43 @@ export const createBackendContext = async (
   const mcpUserRegistrationStore = new FileMcpUserRegistrationStore(
     mcpUserRegistrationsFilePath
   );
+  const toolSafety = new ToolSafetyService({
+    repository: new SqliteToolPolicyRepository(database)
+  });
   const mcpGateway = new McpGatewayService({
     installedPlugins: pluginRegistry,
     logger,
-    userRegistrations: await mcpUserRegistrationStore.load()
+    userRegistrations: await mcpUserRegistrationStore.load(),
+    classifyToolRisk: (input) => toolSafety.resolveRiskLevel(input),
+    secretStore: secretService
+  });
+  const permissionEngine = new PermissionEngineService({
+    installedPlugins: pluginRegistry,
+    repository: new SqlitePermissionGrantRepository(database),
+    auditRepository,
+    logger
   });
   const pluginRuntime = new PluginRuntimeService({
     pluginResolver: pluginRegistry,
     logger,
-    worker: await resolvePluginRuntimeWorkerOptions()
+    worker: await resolvePluginRuntimeWorkerOptions(),
+    permissionBroker: {
+      checkPermission: (input) => permissionEngine.checkPluginPermission(input),
+      requestPermission: (input) =>
+        permissionEngine.requestPluginPermission(input)
+    },
+    configurationBroker: {
+      getConfiguration: () => null
+    },
+    secretStore: secretService
   });
   const pluginLifecycle = new PluginLifecycleService({
     pluginRegistry,
-    pluginRuntime
+    pluginRuntime,
+    mcpGateway,
+    permissionEngine,
+    secretStore: secretService
   });
-  database.runMigrations();
   database.setMetadata("database_status", "ready");
 
   return {
@@ -825,9 +986,93 @@ export const createBackendContext = async (
     pluginRegistry,
     pluginRuntime,
     pluginLifecycle,
+    permissionEngine,
+    auditService,
+    secretService,
+    toolSafety,
     logger,
     flushLogs: () => fileLogTransport.flush()
   };
+};
+
+const resolveCatalogTool = (context: BackendContext, toolId: string) => {
+  const tool = context.mcpGateway
+    .getCatalog()
+    .tools.find((candidate) => candidate.id === toolId);
+
+  if (!tool) {
+    throw new BackendPublicError(
+      "MCP_GATEWAY_TOOL_NOT_FOUND",
+      `Tool '${toolId}' is not registered.`,
+      404
+    );
+  }
+
+  return tool;
+};
+
+const assertToolExecutionAllowed = (
+  context: BackendContext,
+  toolExecutionRequest: z.infer<typeof toolExecutionRequestSchema>
+): void => {
+  const tool = resolveCatalogTool(context, toolExecutionRequest.toolId);
+  const evaluation = context.permissionEngine.evaluateToolExecution({
+    tool,
+    executionContext: toolExecutionRequest.executionContext
+  });
+
+  if (evaluation.allowed) {
+    if (evaluation.requiredApproval !== "none") {
+      logObservabilityEvent(
+        context.logger,
+        "info",
+        observabilityEvents.toolExecutionApproved,
+        {
+          toolId: toolExecutionRequest.toolId,
+          correlationId: toolExecutionRequest.executionContext.correlationId,
+          requiredApproval: evaluation.requiredApproval
+        }
+      );
+    }
+    return;
+  }
+
+  logObservabilityEvent(
+    context.logger,
+    "warn",
+    observabilityEvents.toolExecutionFailed,
+    {
+      toolId: toolExecutionRequest.toolId,
+      correlationId: toolExecutionRequest.executionContext.correlationId,
+      outcome: "denied",
+      ...(evaluation.code ? { errorCode: evaluation.code } : {})
+    }
+  );
+  throw new BackendPublicError(
+    evaluation.code ?? "MCP_TOOL_EXECUTION_DENIED",
+    evaluation.message ?? `Tool '${toolExecutionRequest.toolId}' was denied.`,
+    evaluation.code === "MCP_TOOL_EXECUTION_APPROVAL_REQUIRED" ? 409 : 403
+  );
+};
+
+const finalizeSuccessfulToolExecution = (
+  context: BackendContext,
+  toolExecutionRequest: z.infer<typeof toolExecutionRequestSchema>
+): void => {
+  const tool = resolveCatalogTool(context, toolExecutionRequest.toolId);
+
+  context.permissionEngine.recordToolExecutionAudit({
+    tool,
+    executionContext: toolExecutionRequest.executionContext,
+    outcome: "success"
+  });
+
+  if (tool.pluginId) {
+    context.permissionEngine.consumeAllowOnceGrant(
+      tool.pluginId,
+      "tool.execute"
+    );
+  }
 };
 
 export const createDesktopBackendHandler =
@@ -963,10 +1208,14 @@ export const createDesktopBackendHandler =
           "MCP_GATEWAY_REQUEST_INVALID",
           "MCP gateway request is invalid."
         );
+        const parsedToolExecutionRequest =
+          toolExecutionRequestSchema.parse(toolExecutionRequest);
+
+        assertToolExecutionAllowed(context, parsedToolExecutionRequest);
 
         const requestAbortSignal = createRequestAbortSignal(request, response);
         const result = await context.mcpGateway.executeTool(
-          toolExecutionRequestSchema.parse(toolExecutionRequest),
+          parsedToolExecutionRequest,
           {
             signal: requestAbortSignal
           }
@@ -975,6 +1224,8 @@ export const createDesktopBackendHandler =
         if (requestAbortSignal.aborted || response.destroyed) {
           return;
         }
+
+        finalizeSuccessfulToolExecution(context, parsedToolExecutionRequest);
 
         writeJson(response, {
           result
@@ -993,10 +1244,14 @@ export const createDesktopBackendHandler =
           "MCP_GATEWAY_REQUEST_INVALID",
           "MCP gateway request is invalid."
         );
+        const parsedToolExecutionRequest =
+          toolExecutionRequestSchema.parse(toolExecutionRequest);
+
+        assertToolExecutionAllowed(context, parsedToolExecutionRequest);
 
         writeJson(response, {
           execution: context.mcpGateway.startToolExecution(
-            toolExecutionRequestSchema.parse(toolExecutionRequest)
+            parsedToolExecutionRequest
           )
         });
         return;
@@ -1092,6 +1347,27 @@ export const createDesktopBackendHandler =
         return;
       }
 
+      if (request.method === "GET" && requestUrl.pathname === "/logs") {
+        const requestedLimit = Number(requestUrl.searchParams.get("limit"));
+        const limit =
+          Number.isInteger(requestedLimit) && requestedLimit > 0
+            ? Math.min(requestedLimit, 200)
+            : 100;
+        const pluginId = requestUrl.searchParams.get("pluginId")?.trim();
+        const registrationId = requestUrl.searchParams
+          .get("registrationId")
+          ?.trim();
+
+        writeJson(response, {
+          logs: await readPersistedLogEntries(context.logFilePath, {
+            limit,
+            ...(pluginId ? { pluginId } : {}),
+            ...(registrationId ? { registrationId } : {})
+          })
+        });
+        return;
+      }
+
       if (request.method === "POST" && requestUrl.pathname === "/logs") {
         const { entry } = await readJsonBody<{
           readonly entry: PersistedLogEntry;
@@ -1104,9 +1380,139 @@ export const createDesktopBackendHandler =
       }
 
       if (request.method === "GET" && requestUrl.pathname === "/plugins") {
+        const pluginId = requestUrl.searchParams.get("pluginId")?.trim();
+
+        if (pluginId) {
+          const plugin = context.pluginRegistry.getInstalledPlugin(pluginId);
+
+          if (!plugin) {
+            throw new BackendPublicError(
+              "PLUGIN_NOT_FOUND",
+              `Plugin '${pluginId}' is not registered.`,
+              404
+            );
+          }
+
+          writeJson(response, { plugin });
+          return;
+        }
+
         writeJson(response, {
           plugins: context.pluginRegistry.listInstalledPlugins()
         });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/plugins/inspect-local"
+      ) {
+        const { packagePath } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          registerLocalPluginRequestSchema,
+          "PLUGIN_INSPECT_REQUEST_INVALID",
+          "Plugin inspect request is invalid."
+        );
+
+        validatePluginPackagePath(packagePath);
+        writeJson(response, {
+          package:
+            await context.pluginRegistry.inspectLocalPluginPackage(packagePath)
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/plugins/unregister"
+      ) {
+        const { pluginId } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          pluginRuntimeControlRequestSchema,
+          "PLUGIN_UNREGISTER_REQUEST_INVALID",
+          "Plugin unregister request is invalid."
+        );
+
+        await context.pluginLifecycle.unregisterPlugin(pluginId);
+        writeJson(response, { ok: true });
+        return;
+      }
+
+      if (request.method === "GET" && requestUrl.pathname === "/audit") {
+        const limitValue = requestUrl.searchParams.get("limit")?.trim();
+        const parsedLimit =
+          limitValue === undefined ? 100 : Number.parseInt(limitValue, 10);
+
+        if (
+          !Number.isInteger(parsedLimit) ||
+          parsedLimit < 1 ||
+          parsedLimit > 500
+        ) {
+          throw new BackendPublicError(
+            "AUDIT_REQUEST_INVALID",
+            "Audit request is invalid.",
+            400
+          );
+        }
+
+        writeJson(response, {
+          events: context.auditService.listRecent({
+            limit: parsedLimit,
+            ...(requestUrl.searchParams.get("pluginId")?.trim()
+              ? { pluginId: requestUrl.searchParams.get("pluginId")!.trim() }
+              : {}),
+            ...(requestUrl.searchParams.get("action")?.trim()
+              ? { action: requestUrl.searchParams.get("action")!.trim() }
+              : {})
+          })
+        });
+        return;
+      }
+
+      if (request.method === "GET" && requestUrl.pathname === "/secrets/keys") {
+        const namespace = requestUrl.searchParams.get("namespace")?.trim();
+
+        if (!namespace) {
+          throw new BackendPublicError(
+            "SECRET_REQUEST_INVALID",
+            "Secret request is invalid.",
+            400
+          );
+        }
+
+        writeJson(response, {
+          keys: await context.secretService.listKeys(namespace)
+        });
+        return;
+      }
+
+      if (request.method === "PUT" && requestUrl.pathname === "/secrets") {
+        const { namespace, key, value } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          secretStoreSetRequestSchema,
+          "SECRET_REQUEST_INVALID",
+          "Secret request is invalid."
+        );
+
+        await context.secretService.set(namespace, key, value);
+        writeJson(response, { ok: true });
+        return;
+      }
+
+      if (request.method === "DELETE" && requestUrl.pathname === "/secrets") {
+        const { namespace, key } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          secretStoreDeleteRequestSchema,
+          "SECRET_REQUEST_INVALID",
+          "Secret request is invalid."
+        );
+
+        await context.secretService.delete(namespace, key);
+        writeJson(response, { ok: true });
         return;
       }
 
@@ -1132,18 +1538,160 @@ export const createDesktopBackendHandler =
 
       if (
         request.method === "POST" &&
-        requestUrl.pathname === "/plugins/enable"
+        requestUrl.pathname === "/plugins/upgrade-local"
       ) {
-        const { pluginId } = await readValidatedJsonBody(
+        const { packagePath } = await readValidatedJsonBody(
           request,
           MAX_JSON_PAYLOAD_BYTES,
-          pluginRuntimeControlRequestSchema,
+          registerLocalPluginRequestSchema,
+          "PLUGIN_UPGRADE_REQUEST_INVALID",
+          "Plugin upgrade request is invalid."
+        );
+
+        validatePluginPackagePath(packagePath);
+        writeJson(response, {
+          ...(await context.pluginLifecycle.upgradePlugin(packagePath))
+        });
+        return;
+      }
+
+      if (
+        request.method === "GET" &&
+        requestUrl.pathname === "/mcp/tool-policies"
+      ) {
+        const toolId = requestUrl.searchParams.get("toolId")?.trim();
+
+        if (toolId) {
+          const tool = context.mcpGateway
+            .listTools()
+            .find((candidate) => candidate.id === toolId);
+
+          writeJson(response, {
+            policy: context.toolSafety.getPolicyReview({
+              id: toolId,
+              name: tool?.name ?? toolId,
+              ...(tool?.annotations ? { annotations: tool.annotations } : {})
+            })
+          });
+          return;
+        }
+
+        writeJson(response, {
+          policies: context.toolSafety.listManualPolicies()
+        });
+        return;
+      }
+
+      if (
+        request.method === "PUT" &&
+        requestUrl.pathname === "/mcp/tool-policies"
+      ) {
+        const setPolicyRequest = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          setToolPolicyRequestSchema,
+          "MCP_TOOL_POLICY_INVALID",
+          "MCP tool policy request is invalid."
+        );
+        const tool = context.mcpGateway
+          .listTools()
+          .find((candidate) => candidate.id === setPolicyRequest.toolId);
+        const policy = context.toolSafety.setManualPolicy(
+          setPolicyRequest.toolId,
+          setPolicyRequest.riskLevel,
+          tool
+            ? {
+                name: tool.name,
+                ...(tool.annotations ? { annotations: tool.annotations } : {})
+              }
+            : undefined
+        );
+
+        context.mcpGateway.refreshToolRiskLevels();
+
+        writeJson(response, { policy });
+        return;
+      }
+
+      if (
+        request.method === "GET" &&
+        requestUrl.pathname === "/plugins/permissions/review"
+      ) {
+        const pluginId = requestUrl.searchParams.get("pluginId")?.trim();
+        const sessionId = requestUrl.searchParams.get("sessionId")?.trim();
+
+        if (!pluginId) {
+          throw new BackendPublicError(
+            "PLUGIN_PERMISSION_REVIEW_INVALID",
+            "Plugin permission review requires a pluginId query parameter.",
+            400
+          );
+        }
+
+        writeJson(response, {
+          review: context.permissionEngine.getPermissionReview(
+            pluginId,
+            sessionId
+          )
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/plugins/permissions/grant"
+      ) {
+        const grantRequest = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          grantPluginPermissionsRequestSchema,
+          "PLUGIN_PERMISSION_GRANT_INVALID",
+          "Plugin permission grant request is invalid."
+        );
+
+        writeJson(response, {
+          review: context.permissionEngine.grantPermissions(grantRequest)
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/plugins/permissions/revoke"
+      ) {
+        const revokeRequest = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          revokePluginPermissionRequestSchema,
+          "PLUGIN_PERMISSION_REVOKE_INVALID",
+          "Plugin permission revoke request is invalid."
+        );
+
+        writeJson(response, {
+          review: context.permissionEngine.revokePermission(
+            revokeRequest.pluginId,
+            revokeRequest.scope
+          )
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/plugins/enable"
+      ) {
+        const { pluginId, sessionId } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          pluginEnableRequestSchema,
           "PLUGIN_ENABLE_REQUEST_INVALID",
           "Plugin enable request is invalid."
         );
 
         writeJson(response, {
-          plugin: await context.pluginLifecycle.enablePlugin(pluginId)
+          plugin: await context.pluginLifecycle.enablePlugin(pluginId, {
+            ...(sessionId ? { sessionId } : {})
+          })
         });
         return;
       }
@@ -1159,7 +1707,6 @@ export const createDesktopBackendHandler =
           "PLUGIN_DISABLE_REQUEST_INVALID",
           "Plugin disable request is invalid."
         );
-        await context.mcpGateway.stopServersForPlugin(pluginId);
         writeJson(response, {
           plugin: await context.pluginLifecycle.disablePlugin(pluginId)
         });
@@ -1260,8 +1807,16 @@ export const createDesktopBackendHandler =
           "MCP gateway request is invalid."
         );
 
+        const serverHealth =
+          context.mcpGateway.inspectServerHealth(registrationId);
         writeJson(response, {
-          server: await context.mcpGateway.startServer(registrationId)
+          server:
+            serverHealth.source.type === "plugin"
+              ? await context.pluginLifecycle.startPluginMcpServer(
+                  serverHealth.source.pluginId,
+                  registrationId
+                )
+              : await context.mcpGateway.startServer(registrationId)
         });
         return;
       }
@@ -1278,8 +1833,16 @@ export const createDesktopBackendHandler =
           "MCP gateway request is invalid."
         );
 
+        const serverHealth =
+          context.mcpGateway.inspectServerHealth(registrationId);
         writeJson(response, {
-          server: await context.mcpGateway.stopServer(registrationId)
+          server:
+            serverHealth.source.type === "plugin"
+              ? await context.pluginLifecycle.stopPluginMcpServer(
+                  serverHealth.source.pluginId,
+                  registrationId
+                )
+              : await context.mcpGateway.stopServer(registrationId)
         });
         return;
       }
@@ -1336,6 +1899,49 @@ export const createDesktopBackendHandler =
 
         writeJson(response, {
           runtime: await context.pluginLifecycle.stopPlugin(pluginId)
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/plugins/runtime/read-configuration"
+      ) {
+        const { pluginId, key } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          pluginRuntimeReadConfigurationRequestSchema,
+          "PLUGIN_RUNTIME_REQUEST_INVALID",
+          "Plugin runtime request is invalid."
+        );
+
+        writeJson(response, {
+          configuration: await context.pluginRuntime.readPluginConfiguration(
+            pluginId,
+            key
+          )
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/plugins/runtime/invoke-capability"
+      ) {
+        const { pluginId, capability, payload } = await readValidatedJsonBody(
+          request,
+          MAX_JSON_PAYLOAD_BYTES,
+          pluginRuntimeInvokeCapabilityRequestSchema,
+          "PLUGIN_RUNTIME_REQUEST_INVALID",
+          "Plugin runtime request is invalid."
+        );
+
+        writeJson(response, {
+          capability: await context.pluginRuntime.invokePluginCapability(
+            pluginId,
+            capability,
+            payload
+          )
         });
         return;
       }

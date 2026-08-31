@@ -1,3 +1,5 @@
+import { Link } from "react-router-dom";
+
 import type { ChangeEvent } from "react";
 
 import type { ThemePreference } from "@engineering-os/config";
@@ -139,15 +141,41 @@ export function SettingsScreen() {
           </div>
         </PanelCard>
 
+        <PanelCard eyebrow="Platform" title="Milestone 2 management">
+          <div className="stack-list">
+            <div className="summary-list__row">
+              <span>Plugins</span>
+              <Link className="ui-button ui-button--ghost" to="/plugins">
+                Manage plugins
+              </Link>
+            </div>
+            <div className="summary-list__row">
+              <span>MCP Servers</span>
+              <Link className="ui-button ui-button--ghost" to="/mcp/servers">
+                Manage MCP servers
+              </Link>
+            </div>
+            <div className="summary-list__row">
+              <span>Tool test console</span>
+              <Link
+                className="ui-button ui-button--ghost"
+                to="/mcp/tool-console"
+              >
+                Open console
+              </Link>
+            </div>
+            <div className="summary-list__row">
+              <span>Permissions</span>
+              <Link className="ui-button ui-button--ghost" to="/permissions">
+                Review grants
+              </Link>
+            </div>
+          </div>
+        </PanelCard>
+
         <PanelCard eyebrow="Future" title="Reserved surfaces">
           <div className="stack-list">
-            {[
-              "AI Providers",
-              "MCP Servers",
-              "Plugins",
-              "Knowledge Storage",
-              "Security and Permissions"
-            ].map((item) => (
+            {["AI Providers", "Knowledge Storage"].map((item) => (
               <div className="summary-list__row" key={item}>
                 <span>{item}</span>
                 <Badge tone="warning">Unavailable</Badge>

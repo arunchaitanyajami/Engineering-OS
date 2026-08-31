@@ -61,7 +61,11 @@ export function HomeScreen() {
             </div>
             <div className="summary-list__row">
               <span>Plugins</span>
-              <span>Not configured</span>
+              <Link to="/plugins">Manage installed plugins</Link>
+            </div>
+            <div className="summary-list__row">
+              <span>MCP gateway</span>
+              <Link to="/mcp/servers">Manage MCP servers</Link>
             </div>
             <div className="summary-list__row">
               <span>Workflows</span>
@@ -99,9 +103,10 @@ export function HomeScreen() {
         <PanelCard eyebrow="Foundation" title="Milestone boundaries">
           <div className="stack-list">
             <div className="list-note">
-              <strong>Plugin summaries</strong>
+              <strong>Plugin management</strong>
               <span className="ui-muted">
-                Plugin SDK and installation arrive in Milestone 2.
+                Install local packages, review permissions, and inspect runtime
+                health.
               </span>
             </div>
             <div className="list-note">

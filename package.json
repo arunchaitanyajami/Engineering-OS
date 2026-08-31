@@ -1,6 +1,6 @@
 {
   "name": "engineering-os",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Desktop-first, AI-native engineering platform.",
@@ -30,7 +30,7 @@
     "test:unit": "vitest run --config vitest.config.ts --exclude '**/*.integration.test.ts'",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:e2e": "playwright test",
-    "boundaries:check": "depcruise --config dependency-cruiser.cjs --include-only '^apps|^packages' .",
+    "boundaries:check": "depcruise --config dependency-cruiser.cjs --include-only '^apps|^packages|^plugins' .",
     "deps:check": "pnpm dedupe --check",
     "security:check": "pnpm audit --prod --audit-level high",
     "changeset": "changeset",
@@ -59,5 +59,11 @@
     "typescript-eslint": "^8.19.0",
     "vitest": "^2.1.9",
     "zod": "^3.24.1"
+  },
+  "pnpm": {
+    "overrides": {
+      "fast-uri": "3.1.5",
+      "ip-address": "10.3.1"
+    }
   }
 }

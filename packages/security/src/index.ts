@@ -23,6 +23,16 @@ export {
   systemSecretReferenceSchema as secretReferenceSchema
 } from "@engineering-os/contracts/unstable-runtime";
 
+export { SecretServiceError } from "./errors.js";
+export {
+  assertValidSecretKey,
+  assertValidSecretNamespace
+} from "./namespace.js";
+export {
+  findLiteralSecretEnvironmentViolations,
+  isSensitiveEnvironmentKey
+} from "./sensitive-environment.js";
+
 import { permissionScope } from "@engineering-os/contracts";
 
 export type ConfirmationMode =

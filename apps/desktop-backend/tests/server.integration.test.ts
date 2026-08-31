@@ -71,9 +71,20 @@ describe("desktop backend server", () => {
                     properties: {
                       path: {
                         type: "string"
+                      },
+                      mode: {
+                        type: "string"
                       }
                     },
-                    required: ["path"]
+                    anyOf: [
+                      {
+                        required: ["path"]
+                      },
+                      {
+                        required: ["mode"]
+                      }
+                    ],
+                    additionalProperties: false
                   },
                   outputSchema: {
                     type: "object",
@@ -364,6 +375,54 @@ describe("desktop backend server", () => {
     ...additionalHeaders
   });
 
+  const grantAllPluginPermissions = async (pluginId: string) => {
+    if (!runtime) {
+      throw new Error("Runtime must be started before granting permissions.");
+    }
+
+    const reviewResponse = await fetch(
+      `${runtime.baseUrl}/plugins/permissions/review?pluginId=${encodeURIComponent(pluginId)}`,
+      {
+        headers: authenticatedHeaders()
+      }
+    );
+    expect(reviewResponse.status).toBe(200);
+    const reviewBody = (await reviewResponse.json()) as {
+      review: {
+        pendingRequirements: readonly {
+          scope: string;
+          constraint?: Record<string, unknown>;
+        }[];
+      };
+    };
+
+    if (reviewBody.review.pendingRequirements.length === 0) {
+      return;
+    }
+
+    const grantResponse = await fetch(
+      `${runtime.baseUrl}/plugins/permissions/grant`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({
+          pluginId,
+          grants: reviewBody.review.pendingRequirements.map((requirement) => ({
+            scope: requirement.scope,
+            decision: "always-allow",
+            ...(requirement.constraint
+              ? { constraint: requirement.constraint }
+              : {})
+          }))
+        })
+      }
+    );
+
+    expect(grantResponse.status).toBe(200);
+  };
+
   beforeEach(async () => {
     appDataDirectory = await mkdtemp(join(tmpdir(), "engineering-os-backend-"));
   });
@@ -389,7 +448,7 @@ describe("desktop backend server", () => {
       database: {
         ok: true,
         status: "ready",
-        migrationVersion: 4,
+        migrationVersion: 8,
         databasePath: runtime.context.databaseFilePath
       },
       configFilePath: runtime.context.configFilePath,
@@ -495,8 +554,10 @@ describe("desktop backend server", () => {
       scope: "desktop-shell",
       message: "Desktop backend integration test.",
       context: {
-        area: "native-integration"
-      }
+        area: "native-integration",
+        pluginId: "com.engineering-os.log-test"
+      },
+      correlationId: "log-correlation"
     };
 
     const response = await fetch(`${runtime.baseUrl}/logs`, {
@@ -512,6 +573,24 @@ describe("desktop backend server", () => {
     await expect(
       readFile(runtime.context.logFilePath, "utf8")
     ).resolves.toContain('"scope":"desktop-shell"');
+
+    const logsResponse = await fetch(
+      `${runtime.baseUrl}/logs?pluginId=com.engineering-os.log-test`,
+      {
+        headers: authenticatedHeaders()
+      }
+    );
+
+    expect(logsResponse.status).toBe(200);
+    await expect(logsResponse.json()).resolves.toMatchObject({
+      logs: [
+        {
+          scope: "desktop-shell",
+          message: "Desktop backend integration test.",
+          correlationId: "log-correlation"
+        }
+      ]
+    });
   });
 
   it("requires authentication for desktop backend routes", async () => {
@@ -678,7 +757,7 @@ describe("desktop backend server", () => {
 
     expect(context.database.getHealth()).toMatchObject({
       ok: true,
-      migrationVersion: 4,
+      migrationVersion: 8,
       databasePath: context.databaseFilePath
     });
 
@@ -766,7 +845,7 @@ describe("desktop backend server", () => {
   it("rejects incompatible plugin packages during registration", async () => {
     runtime = await startRuntime();
     const packageDirectory = await createLocalPluginPackage(appDataDirectory, {
-      engineeringOsRange: ">=0.2.0"
+      engineeringOsRange: ">=0.3.0"
     });
 
     const response = await fetch(`${runtime.baseUrl}/plugins/register-local`, {
@@ -781,7 +860,7 @@ describe("desktop backend server", () => {
     await expect(response.json()).resolves.toEqual({
       code: "PLUGIN_VERSION_INCOMPATIBLE",
       message:
-        "Plugin 'com.engineering-os.filesystem' requires Engineering OS '>=0.2.0' but current version is '0.1.0'."
+        "Plugin 'com.engineering-os.filesystem' requires Engineering OS '>=0.3.0' but current version is '0.2.0'."
     });
   });
 
@@ -847,6 +926,7 @@ describe("desktop backend server", () => {
       ]
     });
 
+    await grantAllPluginPermissions("com.engineering-os.mcp-test");
     await fetch(`${runtime.baseUrl}/plugins/enable`, {
       method: "POST",
       headers: authenticatedHeaders({
@@ -1024,6 +1104,7 @@ describe("desktop backend server", () => {
       }),
       body: JSON.stringify({ packagePath: packageDirectory })
     });
+    await grantAllPluginPermissions("com.engineering-os.mcp-runtime");
     await fetch(`${runtime.baseUrl}/plugins/enable`, {
       method: "POST",
       headers: authenticatedHeaders({
@@ -1302,6 +1383,49 @@ describe("desktop backend server", () => {
     });
   });
 
+  it("rejects persisting plaintext secret-like user MCP environment values through the backend API", async () => {
+    runtime = await startRuntime();
+    const { serverDirectory } =
+      await createLocalCommandServer(appDataDirectory);
+
+    const registerResponse = await fetch(
+      `${runtime.baseUrl}/mcp/servers/register`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({
+          registration: {
+            id: "secret-filesystem",
+            source: {
+              type: "user"
+            },
+            name: "Secret Filesystem",
+            transport: {
+              type: "stdio",
+              command: "node",
+              args: ["./index.js"],
+              cwd: serverDirectory,
+              env: {
+                API_KEY: "plaintext-secret"
+              }
+            },
+            enabled: true,
+            timeoutMs: 10_000
+          }
+        })
+      }
+    );
+
+    expect(registerResponse.status).toBe(400);
+    await expect(registerResponse.json()).resolves.toEqual({
+      code: "MCP_USER_REGISTRATION_LITERAL_SECRET_FORBIDDEN",
+      message:
+        "User MCP registration 'secret-filesystem' cannot persist literal environment values for sensitive key 'API_KEY'."
+    });
+  });
+
   it("executes MCP tools through the backend API", async () => {
     runtime = await startRuntime();
     const { serverDirectory } =
@@ -1384,6 +1508,70 @@ describe("desktop backend server", () => {
           }
         }
       }
+    });
+  });
+
+  it("rejects invalid MCP tool arguments through the backend API", async () => {
+    runtime = await startRuntime();
+    const { serverDirectory } =
+      await createLocalCommandServer(appDataDirectory);
+
+    await fetch(`${runtime.baseUrl}/mcp/servers/register`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        registration: {
+          id: "validated-filesystem",
+          source: {
+            type: "user"
+          },
+          name: "Validated Filesystem",
+          transport: {
+            type: "stdio",
+            command: "node",
+            args: ["./index.js"],
+            cwd: serverDirectory
+          },
+          enabled: true,
+          timeoutMs: 10_000
+        }
+      })
+    });
+    await fetch(`${runtime.baseUrl}/mcp/servers/start`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        registrationId: "user:validated-filesystem"
+      })
+    });
+
+    const response = await fetch(`${runtime.baseUrl}/mcp/tools/execute`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        toolId: "user.validated-filesystem.tool.read_workspace",
+        arguments: {},
+        executionContext: {
+          actor: {
+            type: "user"
+          },
+          correlationId: "corr-invalid-args",
+          approvalMode: "none"
+        }
+      })
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      code: "MCP_GATEWAY_TOOL_ARGUMENTS_INVALID",
+      message:
+        "Arguments for tool 'user.validated-filesystem.tool.read_workspace' are invalid."
     });
   });
 
@@ -2183,6 +2371,47 @@ describe("desktop backend server", () => {
       }
     });
 
+    const readConfigurationResponse = await fetch(
+      `${runtime.baseUrl}/plugins/runtime/read-configuration`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({
+          pluginId: "com.engineering-os.runtime-test",
+          key: "theme"
+        })
+      }
+    );
+
+    expect(readConfigurationResponse.status).toBe(200);
+    await expect(readConfigurationResponse.json()).resolves.toMatchObject({
+      configuration: {
+        value: null
+      }
+    });
+
+    const invokeCapabilityResponse = await fetch(
+      `${runtime.baseUrl}/plugins/runtime/invoke-capability`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({
+          pluginId: "com.engineering-os.runtime-test",
+          capability: "settings.render",
+          payload: {}
+        })
+      }
+    );
+
+    expect(invokeCapabilityResponse.status).toBe(502);
+    await expect(invokeCapabilityResponse.json()).resolves.toMatchObject({
+      code: "PLUGIN_RUNTIME_CAPABILITY_UNSUPPORTED"
+    });
+
     const stopResponse = await fetch(
       `${runtime.baseUrl}/plugins/runtime/stop`,
       {
@@ -2222,5 +2451,312 @@ describe("desktop backend server", () => {
         enabled: false
       }
     });
+  });
+
+  it("requires permission grants before enabling MCP plugins", async () => {
+    runtime = await startRuntime();
+    const packageDirectory = await createLocalPluginPackage(appDataDirectory, {
+      pluginId: "com.engineering-os.permission-gate",
+      mcp: [
+        {
+          id: "filesystem",
+          transport: "stdio",
+          command: "node",
+          args: ["./index.js"],
+          cwd: "./servers/filesystem"
+        }
+      ]
+    });
+
+    await fetch(`${runtime.baseUrl}/plugins/register-local`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({ packagePath: packageDirectory })
+    });
+
+    const blockedEnableResponse = await fetch(
+      `${runtime.baseUrl}/plugins/enable`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({
+          pluginId: "com.engineering-os.permission-gate"
+        })
+      }
+    );
+
+    expect(blockedEnableResponse.status).toBe(409);
+    await expect(blockedEnableResponse.json()).resolves.toMatchObject({
+      code: "PLUGIN_PERMISSIONS_PENDING"
+    });
+
+    await grantAllPluginPermissions("com.engineering-os.permission-gate");
+
+    const enableResponse = await fetch(`${runtime.baseUrl}/plugins/enable`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        pluginId: "com.engineering-os.permission-gate"
+      })
+    });
+
+    expect(enableResponse.status).toBe(200);
+    await expect(enableResponse.json()).resolves.toMatchObject({
+      plugin: {
+        pluginId: "com.engineering-os.permission-gate",
+        enabled: true
+      }
+    });
+  });
+
+  it("supports manual MCP tool safety policy overrides", async () => {
+    runtime = await startRuntime();
+    const packageDirectory = await createLocalPluginPackage(appDataDirectory, {
+      pluginId: "com.engineering-os.tool-policy",
+      mcp: [
+        {
+          id: "filesystem",
+          transport: "stdio",
+          command: "node",
+          args: ["./index.js"],
+          cwd: "./servers/filesystem"
+        }
+      ]
+    });
+
+    await fetch(`${runtime.baseUrl}/plugins/register-local`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({ packagePath: packageDirectory })
+    });
+    await grantAllPluginPermissions("com.engineering-os.tool-policy");
+    await fetch(`${runtime.baseUrl}/plugins/enable`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        pluginId: "com.engineering-os.tool-policy"
+      })
+    });
+    await fetch(`${runtime.baseUrl}/mcp/servers/start`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        registrationId: "com.engineering-os.tool-policy:filesystem"
+      })
+    });
+
+    const toolsResponse = await fetch(`${runtime.baseUrl}/mcp/tools`, {
+      headers: authenticatedHeaders()
+    });
+    const toolsPayload = (await toolsResponse.json()) as {
+      tools: Array<{ id: string; riskLevel: string }>;
+    };
+    const readWorkspaceTool = toolsPayload.tools.find((tool) =>
+      tool.id.endsWith(".tool.read_workspace")
+    );
+
+    expect(readWorkspaceTool?.riskLevel).toBe("read-only");
+
+    const toolId = readWorkspaceTool?.id;
+    expect(toolId).toBeTruthy();
+
+    const overrideResponse = await fetch(
+      `${runtime.baseUrl}/mcp/tool-policies`,
+      {
+        method: "PUT",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({
+          toolId,
+          riskLevel: "privileged"
+        })
+      }
+    );
+
+    expect(overrideResponse.status).toBe(200);
+    await expect(overrideResponse.json()).resolves.toMatchObject({
+      policy: {
+        toolId,
+        effectiveRiskLevel: "privileged",
+        source: "manual",
+        inferredRiskLevel: "read-only"
+      }
+    });
+
+    const refreshedToolsResponse = await fetch(`${runtime.baseUrl}/mcp/tools`, {
+      headers: authenticatedHeaders()
+    });
+
+    expect(refreshedToolsResponse.status).toBe(200);
+    await expect(refreshedToolsResponse.json()).resolves.toMatchObject({
+      tools: [
+        {
+          id: toolId,
+          riskLevel: "privileged"
+        }
+      ]
+    });
+  });
+
+  it("exposes core service routes for inspect, secrets, audit, and unregister", async () => {
+    runtime = await startRuntime();
+    const packageDirectory = await createLocalPluginPackage(appDataDirectory, {
+      pluginId: "com.engineering-os.core-services",
+      mcp: [
+        {
+          id: "filesystem",
+          transport: "stdio",
+          command: "node",
+          args: ["./index.js"],
+          cwd: "./servers/filesystem"
+        }
+      ]
+    });
+
+    const inspectResponse = await fetch(
+      `${runtime.baseUrl}/plugins/inspect-local`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({ packagePath: packageDirectory })
+      }
+    );
+
+    expect(inspectResponse.status).toBe(200);
+    await expect(inspectResponse.json()).resolves.toMatchObject({
+      package: {
+        manifest: {
+          id: "com.engineering-os.core-services"
+        }
+      }
+    });
+
+    await fetch(`${runtime.baseUrl}/plugins/register-local`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({ packagePath: packageDirectory })
+    });
+
+    const pluginResponse = await fetch(
+      `${runtime.baseUrl}/plugins?pluginId=com.engineering-os.core-services`,
+      {
+        headers: authenticatedHeaders()
+      }
+    );
+
+    expect(pluginResponse.status).toBe(200);
+    await expect(pluginResponse.json()).resolves.toMatchObject({
+      plugin: {
+        pluginId: "com.engineering-os.core-services"
+      }
+    });
+
+    const secretResponse = await fetch(`${runtime.baseUrl}/secrets`, {
+      method: "PUT",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        namespace: "com.engineering-os.core-services",
+        key: "token",
+        value: "secret-value"
+      })
+    });
+
+    expect(secretResponse.status).toBe(200);
+
+    const secretKeysResponse = await fetch(
+      `${runtime.baseUrl}/secrets/keys?namespace=com.engineering-os.core-services`,
+      {
+        headers: authenticatedHeaders()
+      }
+    );
+
+    expect(secretKeysResponse.status).toBe(200);
+    await expect(secretKeysResponse.json()).resolves.toMatchObject({
+      keys: ["token"]
+    });
+
+    await grantAllPluginPermissions("com.engineering-os.core-services");
+
+    const enableResponse = await fetch(`${runtime.baseUrl}/plugins/enable`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        pluginId: "com.engineering-os.core-services"
+      })
+    });
+
+    expect(enableResponse.status).toBe(200);
+
+    const auditResponse = await fetch(
+      `${runtime.baseUrl}/audit?pluginId=com.engineering-os.core-services&limit=10`,
+      {
+        headers: authenticatedHeaders()
+      }
+    );
+
+    expect(auditResponse.status).toBe(200);
+    await expect(auditResponse.json()).resolves.toMatchObject({
+      events: expect.arrayContaining([
+        expect.objectContaining({
+          action: "permission.granted",
+          resourceId: "com.engineering-os.core-services"
+        })
+      ])
+    });
+
+    await fetch(`${runtime.baseUrl}/plugins/disable`, {
+      method: "POST",
+      headers: authenticatedHeaders({
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        pluginId: "com.engineering-os.core-services"
+      })
+    });
+
+    const unregisterResponse = await fetch(
+      `${runtime.baseUrl}/plugins/unregister`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify({
+          pluginId: "com.engineering-os.core-services"
+        })
+      }
+    );
+
+    expect(unregisterResponse.status).toBe(200);
+
+    const missingPluginResponse = await fetch(
+      `${runtime.baseUrl}/plugins?pluginId=com.engineering-os.core-services`,
+      {
+        headers: authenticatedHeaders()
+      }
+    );
+
+    expect(missingPluginResponse.status).toBe(404);
   });
 });

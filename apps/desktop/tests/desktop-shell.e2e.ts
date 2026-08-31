@@ -16,7 +16,9 @@ test("navigates without full reload and shows placeholder routes", async ({
   await expect(
     page.getByRole("heading", { name: "Plugins", exact: true })
   ).toBeVisible();
-  await expect(page.getByText(/not available yet/i)).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Register local package" })
+  ).toBeVisible();
 });
 
 test("creates and reopens a local session shell", async ({ page }) => {

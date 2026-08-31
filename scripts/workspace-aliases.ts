@@ -16,17 +16,39 @@ const workspaceAliasEntries = [
     "../packages/plugin-registry/src/index.ts"
   ],
   ["@engineering-os/mcp-gateway", "../packages/mcp-gateway/src/index.ts"],
+  ["@engineering-os/mcp-client", "../packages/mcp-client/src/index.ts"],
+  [
+    "@engineering-os/capability-catalog",
+    "../packages/capability-catalog/src/index.ts"
+  ],
+  [
+    "@engineering-os/permission-engine",
+    "../packages/permission-engine/src/index.ts"
+  ],
   ["@engineering-os/plugin-runtime", "../packages/plugin-runtime/src/index.ts"],
+  ["@engineering-os/plugin-sdk", "../packages/plugin-sdk/src/index.ts"],
+  ["@engineering-os/observability", "../packages/observability/src/index.ts"],
   ["@engineering-os/platform", "../packages/platform/src/index.ts"],
-  ["@engineering-os/security", "../packages/security/src/index.ts"],
   ["@engineering-os/events", "../packages/events/src/index.ts"],
   ["@engineering-os/ui", "../packages/ui/src/index.tsx"],
   ["@engineering-os/testing", "../packages/testing/src/index.ts"]
 ] as const;
 
-export const workspaceAliases = workspaceAliasEntries.map(
-  ([packageName, relativePath]) => ({
+export const workspaceAliases = [
+  ...workspaceAliasEntries.map(([packageName, relativePath]) => ({
     find: packageName,
     replacement: fileURLToPath(new URL(relativePath, import.meta.url))
-  })
-);
+  })),
+  {
+    find: /^@engineering-os\/security\/server$/,
+    replacement: fileURLToPath(
+      new URL("../packages/security/src/server.ts", import.meta.url)
+    )
+  },
+  {
+    find: /^@engineering-os\/security$/,
+    replacement: fileURLToPath(
+      new URL("../packages/security/src/index.ts", import.meta.url)
+    )
+  }
+];

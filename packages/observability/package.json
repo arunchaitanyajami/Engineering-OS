@@ -1,0 +1,17 @@
+{
+  "name": "@engineering-os/observability",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@engineering-os/logger": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts --no-error-on-unmatched-pattern"
+  }
+}

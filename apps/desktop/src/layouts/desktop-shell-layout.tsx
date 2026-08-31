@@ -21,10 +21,19 @@ import {
   useApplicationState
 } from "../stores/application-store";
 
+const routeUsesPrefixMatch = (routeId: string): boolean =>
+  routeId === "sessions" ||
+  routeId === "plugins" ||
+  routeId === "permissions" ||
+  routeId === "mcp-servers";
+
 const getCurrentRoute = (pathname: string) =>
   appRouteDefinitions.find((routeDefinition) =>
     matchPath(
-      { path: routeDefinition.path, end: routeDefinition.id !== "sessions" },
+      {
+        path: routeDefinition.path,
+        end: !routeUsesPrefixMatch(routeDefinition.id)
+      },
       pathname
     )
   );
@@ -206,7 +215,7 @@ export function DesktopShellLayout() {
                 matchPath(
                   {
                     path: routeDefinition.path,
-                    end: routeDefinition.id !== "sessions"
+                    end: !routeUsesPrefixMatch(routeDefinition.id)
                   },
                   location.pathname
                 )

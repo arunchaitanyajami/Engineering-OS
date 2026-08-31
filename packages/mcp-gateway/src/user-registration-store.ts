@@ -6,6 +6,9 @@ import {
   type McpServerRegistration
 } from "@engineering-os/contracts/unstable-runtime";
 
+const sensitiveEnvironmentKeyPattern =
+  /(^|_)(API_KEY|ACCESS_KEY|CLIENT_SECRET|AUTH_TOKEN|TOKEN|SECRET|PASSWORD|PRIVATE_KEY|CREDENTIALS?|KEY)(_|$)/i;
+
 const persistedUserRegistrationSchema = mcpServerRegistrationSchema.refine(
   (registration) => registration.source.type === "user",
   "Persisted MCP registrations must use the user source type."
@@ -41,6 +44,43 @@ export interface McpUserRegistrationStore {
   save(registrations: readonly McpServerRegistration[]): Promise<void>;
 }
 
+export class McpUserRegistrationStoreError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly statusCode = 400,
+    readonly cause?: unknown
+  ) {
+    super(message, cause ? { cause } : undefined);
+    this.name = "McpUserRegistrationStoreError";
+  }
+}
+
+const assertSafePersistedEnvironmentValues = (
+  registration: McpServerRegistration
+): void => {
+  const persistedEnvironment = {
+    ...(registration.transport.type === "stdio"
+      ? (registration.transport.env ?? {})
+      : {}),
+    ...(registration.environment ?? {})
+  };
+
+  for (const [key, value] of Object.entries(persistedEnvironment)) {
+    if (
+      typeof value === "string" &&
+      value.trim().length > 0 &&
+      sensitiveEnvironmentKeyPattern.test(key)
+    ) {
+      throw new McpUserRegistrationStoreError(
+        "MCP_USER_REGISTRATION_LITERAL_SECRET_FORBIDDEN",
+        `User MCP registration '${registration.id}' cannot persist literal environment values for sensitive key '${key}'.`,
+        400
+      );
+    }
+  }
+};
+
 export class FileMcpUserRegistrationStore implements McpUserRegistrationStore {
   constructor(private readonly filePath: string) {}
 
@@ -51,6 +91,9 @@ export class FileMcpUserRegistrationStore implements McpUserRegistrationStore {
         JSON.parse(contents)
       );
 
+      parsedDocument.registrations.forEach(
+        assertSafePersistedEnvironmentValues
+      );
       return parsedDocument.registrations;
     } catch (error) {
       if (
@@ -70,6 +113,7 @@ export class FileMcpUserRegistrationStore implements McpUserRegistrationStore {
     const validatedRegistrations = registrations.map((registration) =>
       persistedUserRegistrationSchema.parse(registration)
     );
+    validatedRegistrations.forEach(assertSafePersistedEnvironmentValues);
     const serializedDocument = JSON.stringify(
       {
         schemaVersion: 1,

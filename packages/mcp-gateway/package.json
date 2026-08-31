@@ -1,6 +1,6 @@
 {
   "name": "@engineering-os/mcp-gateway",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "exports": {
@@ -9,8 +9,11 @@
   "dependencies": {
     "@engineering-os/contracts": "workspace:*",
     "@engineering-os/logger": "workspace:*",
+    "@engineering-os/observability": "workspace:*",
     "@engineering-os/plugin-registry": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.29.0"
+    "@engineering-os/security": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "ajv": "^8.20.0"
   },
   "scripts": {
     "build": "tsc --noEmit",

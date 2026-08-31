@@ -1,5 +1,8 @@
+import {
+  REDACTED_VALUE,
+  redactKeys
+} from "@engineering-os/contracts/unstable-runtime";
 import { isRecord } from "@engineering-os/shared";
-import { REDACTED_VALUE, redactKeys } from "@engineering-os/security";
 
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error";
 
@@ -38,13 +41,16 @@ export const serializeError = (
   if (error instanceof Error) {
     return {
       name: error.name,
-      message: error.message,
-      stack: error.stack
+      message: redactSensitiveText(error.message),
+      ...(error.stack ? { stack: redactSensitiveText(error.stack) } : {})
     };
   }
 
   return {
-    value: error
+    value:
+      typeof error === "string"
+        ? redactSensitiveText(error)
+        : redactMetadata(error)
   };
 };
 
@@ -52,6 +58,17 @@ const shouldRedact = (key: string): boolean =>
   redactKeys.some((candidate) =>
     key.toLowerCase().includes(candidate.toLowerCase())
   );
+
+export const redactSensitiveText = (value: string): string =>
+  value
+    .replace(
+      /((?:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|secret)\s*[:=]\s*)(["'][^"']*["']|Bearer\s+[^\s,;]+|[^\s,;]+)/gi,
+      (_match: string, prefix: string, capturedValue: string): string =>
+        /^Bearer\s+/i.test(capturedValue)
+          ? `${prefix}Bearer [REDACTED]`
+          : `${prefix}[REDACTED]`
+    )
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [REDACTED]");
 
 export const redactMetadata = (value: unknown): unknown => {
   if (Array.isArray(value)) {
@@ -75,9 +92,7 @@ export const redactMetadata = (value: unknown): unknown => {
 class ConsoleTransport implements LogTransport {
   write(entry: LogEntry): void {
     const output = {
-      ...entry,
-      metadata: entry.metadata ? redactMetadata(entry.metadata) : undefined,
-      error: entry.error ? serializeError(entry.error) : undefined
+      ...entry
     };
 
     const rendered = JSON.stringify(output);
@@ -171,11 +186,17 @@ class StructuredLogger implements Logger {
   ): LogEntry {
     return {
       level,
-      message,
+      message: redactSensitiveText(message),
       component: this.component,
       ...(this.correlationId ? { correlationId: this.correlationId } : {}),
-      ...(options.metadata ? { metadata: options.metadata } : {}),
-      ...(options.error ? { error: options.error } : {}),
+      ...(options.metadata
+        ? {
+            metadata: redactMetadata(options.metadata) as Readonly<
+              Record<string, unknown>
+            >
+          }
+        : {}),
+      ...(options.error ? { error: serializeError(options.error) } : {}),
       timestamp: new Date().toISOString()
     };
   }

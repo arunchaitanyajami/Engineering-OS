@@ -1,6 +1,6 @@
 {
   "name": "@engineering-os/plugin-runtime",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "exports": {
@@ -9,7 +9,11 @@
   "dependencies": {
     "@engineering-os/contracts": "workspace:*",
     "@engineering-os/logger": "workspace:*",
+    "@engineering-os/observability": "workspace:*",
     "@engineering-os/plugin-registry": "workspace:*"
+  },
+  "devDependencies": {
+    "@engineering-os/testing": "workspace:*"
   },
   "scripts": {
     "build": "tsc --noEmit",

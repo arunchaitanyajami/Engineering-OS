@@ -1,6 +1,6 @@
 {
   "name": "@engineering-os/desktop-backend",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,8 +14,11 @@
     "@engineering-os/database": "workspace:*",
     "@engineering-os/logger": "workspace:*",
     "@engineering-os/mcp-gateway": "workspace:*",
+    "@engineering-os/observability": "workspace:*",
+    "@engineering-os/permission-engine": "workspace:*",
     "@engineering-os/plugin-registry": "workspace:*",
     "@engineering-os/plugin-runtime": "workspace:*",
-    "@engineering-os/platform": "workspace:*"
+    "@engineering-os/platform": "workspace:*",
+    "@engineering-os/security": "workspace:*"
   }
 }

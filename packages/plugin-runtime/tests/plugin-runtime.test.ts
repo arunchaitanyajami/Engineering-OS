@@ -150,6 +150,12 @@ describe("PluginRuntimeService", () => {
       readonly restartBackoffMs?: number;
       readonly maxRestartsPerWindow?: number;
       readonly workerEnv?: NodeJS.ProcessEnv;
+      readonly configurationBroker?: {
+        getConfiguration(input: {
+          readonly pluginId: string;
+          readonly key: string;
+        }): unknown | null;
+      };
       readonly onBeforeRuntimeSpawn?: (
         plugin: InstalledPlugin
       ) => Promise<void> | void;
@@ -170,7 +176,7 @@ describe("PluginRuntimeService", () => {
     const registry = new PluginRegistryService({
       repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "plugin-runtime-test" }),
-      engineeringOsVersion: "0.1.0",
+      engineeringOsVersion: "0.2.0",
       installationsRootPath
     });
     const workerWrapperPath = join(
@@ -201,6 +207,9 @@ describe("PluginRuntimeService", () => {
       },
       restartBackoffMs: options.restartBackoffMs ?? 50,
       maxRestartsPerWindow: options.maxRestartsPerWindow ?? 3,
+      ...(options.configurationBroker
+        ? { configurationBroker: options.configurationBroker }
+        : {}),
       ...(options.onBeforeRuntimeSpawn
         ? { onBeforeRuntimeSpawn: options.onBeforeRuntimeSpawn }
         : {}),
@@ -242,7 +251,9 @@ describe("PluginRuntimeService", () => {
     expect(startedRuntime).toMatchObject({
       pluginId: installedPlugin.pluginId,
       status: "running",
-      healthy: true
+      healthy: true,
+      processId: expect.any(Number),
+      startupDurationMs: expect.any(Number)
     });
     await expect(
       access(
@@ -622,6 +633,74 @@ describe("PluginRuntimeService", () => {
       healthy: false,
       restartCount: 3
     });
+  });
+
+  it("reads plugin configuration through the typed runtime RPC boundary", async () => {
+    const configurationValues = new Map<string, unknown>([["theme", "dark"]]);
+    const { fixturesDirectory, registry, runtime } = await createRuntime({
+      configurationBroker: {
+        getConfiguration: ({ key }) => configurationValues.get(key) ?? null
+      }
+    });
+    const packageDirectory = await createRuntimePluginPackage(
+      fixturesDirectory,
+      {
+        pluginId: "com.engineering-os.read-configuration"
+      }
+    );
+    const installedPlugin = await registerEnabledPlugin(
+      registry,
+      packageDirectory
+    );
+
+    await runtime.startPlugin(installedPlugin.pluginId);
+
+    await expect(
+      runtime.readPluginConfiguration(installedPlugin.pluginId, "theme")
+    ).resolves.toEqual({
+      value: "dark"
+    });
+
+    await expect(
+      runtime.readPluginConfiguration(installedPlugin.pluginId, "missing")
+    ).resolves.toEqual({
+      value: null
+    });
+
+    await runtime.stopPlugin(installedPlugin.pluginId);
+  });
+
+  it("returns structured unsupported errors for invoke-plugin-capability requests", async () => {
+    const { fixturesDirectory, registry, runtime } = await createRuntime({
+      configurationBroker: {
+        getConfiguration: () => null
+      }
+    });
+    const packageDirectory = await createRuntimePluginPackage(
+      fixturesDirectory,
+      {
+        pluginId: "com.engineering-os.invoke-capability"
+      }
+    );
+    const installedPlugin = await registerEnabledPlugin(
+      registry,
+      packageDirectory
+    );
+
+    await runtime.startPlugin(installedPlugin.pluginId);
+
+    await expect(
+      runtime.invokePluginCapability(
+        installedPlugin.pluginId,
+        "settings.render",
+        {}
+      )
+    ).rejects.toMatchObject({
+      code: "PLUGIN_RUNTIME_CAPABILITY_UNSUPPORTED",
+      statusCode: 502
+    });
+
+    await runtime.stopPlugin(installedPlugin.pluginId);
   });
 
   it("prevents restart transition work from spawning after disposal begins", async () => {

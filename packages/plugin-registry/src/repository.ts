@@ -71,6 +71,7 @@ export interface PluginRegistryRepository {
   findAll(): readonly InstalledPlugin[];
   findByPluginId(pluginId: string): InstalledPlugin | null;
   save(plugin: InstalledPlugin): InstalledPlugin;
+  updateInstallation(plugin: InstalledPlugin): InstalledPlugin;
   updateEnabled(
     pluginId: string,
     enabled: boolean,
@@ -175,6 +176,47 @@ export class SqlitePluginRegistryRepository implements PluginRegistryRepository 
     if (!persistedPlugin) {
       throw new Error(
         `Installed plugin '${plugin.pluginId}' could not be read after insert.`
+      );
+    }
+
+    return persistedPlugin;
+  }
+
+  updateInstallation(plugin: InstalledPlugin): InstalledPlugin {
+    this.database.execute(
+      `
+        UPDATE installed_plugins
+        SET
+          install_root_path = ?,
+          installation_mode = ?,
+          source_type = ?,
+          source_path = ?,
+          content_hash = ?,
+          manifest_json = ?,
+          state = ?,
+          updated_at = ?,
+          last_error = ?
+        WHERE plugin_id = ?
+      `,
+      [
+        plugin.installation.rootPath,
+        plugin.installation.mode satisfies PluginInstallationMode,
+        plugin.installation.source.type,
+        plugin.installation.source.path,
+        plugin.installation.contentHash,
+        JSON.stringify(plugin.manifest),
+        plugin.state,
+        plugin.updatedAt,
+        plugin.lastError,
+        plugin.pluginId
+      ]
+    );
+
+    const persistedPlugin = this.findByPluginId(plugin.pluginId);
+
+    if (!persistedPlugin) {
+      throw new Error(
+        `Installed plugin '${plugin.pluginId}' could not be read after installation update.`
       );
     }
 

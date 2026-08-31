@@ -257,6 +257,66 @@ describe("pluginManifestSchema", () => {
 
     expect(result.success).toBe(false);
   });
+
+  it("rejects literal secret values in MCP environment declarations", () => {
+    const result = pluginManifestSchema.safeParse({
+      ...createValidManifest(),
+      permissions: [
+        {
+          scope: "process.spawn",
+          reason: "Starts the bundled MCP server for local reference workflows."
+        },
+        {
+          scope: "mcp.register-server",
+          reason: "Registers the plugin-owned MCP server with the gateway."
+        }
+      ],
+      mcp: [
+        {
+          id: "example",
+          transport: "stdio",
+          command: "node",
+          args: ["./dist/mcp/server.js"],
+          env: {
+            API_TOKEN: "plaintext-secret"
+          }
+        }
+      ]
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts plugin secret references in MCP environment declarations", () => {
+    const result = pluginManifestSchema.safeParse({
+      ...createValidManifest(),
+      permissions: [
+        {
+          scope: "process.spawn",
+          reason: "Starts the bundled MCP server for local reference workflows."
+        },
+        {
+          scope: "mcp.register-server",
+          reason: "Registers the plugin-owned MCP server with the gateway."
+        }
+      ],
+      mcp: [
+        {
+          id: "example",
+          transport: "stdio",
+          command: "node",
+          args: ["./dist/mcp/server.js"],
+          env: {
+            API_TOKEN: {
+              key: "token"
+            }
+          }
+        }
+      ]
+    });
+
+    expect(result.success).toBe(true);
+  });
 });
 
 describe("mcpServerRegistrationSchema", () => {
@@ -441,5 +501,37 @@ describe("pluginRuntimeRequestSchema", () => {
     });
 
     expect(result.success).toBe(true);
+  });
+
+  it("accepts read-configuration and invoke-plugin-capability requests", () => {
+    const readConfiguration = pluginRuntimeRequestSchema.safeParse({
+      protocolVersion: pluginRuntimeProtocolVersion,
+      type: "read-configuration",
+      requestId: "req-read",
+      pluginId: "com.engineering-os.example.plugin",
+      key: "theme"
+    });
+    const invokeCapability = pluginRuntimeRequestSchema.safeParse({
+      protocolVersion: pluginRuntimeProtocolVersion,
+      type: "invoke-plugin-capability",
+      requestId: "req-invoke",
+      pluginId: "com.engineering-os.example.plugin",
+      capability: "settings.render",
+      payload: {}
+    });
+
+    expect(readConfiguration.success).toBe(true);
+    expect(invokeCapability.success).toBe(true);
+  });
+
+  it("rejects unsupported protocol versions", () => {
+    const result = pluginRuntimeRequestSchema.safeParse({
+      protocolVersion: "99",
+      type: "health-check",
+      requestId: "req-unsupported",
+      pluginId: "com.engineering-os.example.plugin"
+    });
+
+    expect(result.success).toBe(false);
   });
 });

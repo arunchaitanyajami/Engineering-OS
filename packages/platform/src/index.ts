@@ -64,7 +64,7 @@ export interface DesktopPlatform {
 
 export class MockDesktopPlatform implements DesktopPlatform {
   constructor(
-    private readonly version = "0.1.0",
+    private readonly version = "0.2.0",
     private readonly platformInfo: PlatformInfo = {
       operatingSystem: "macos",
       family: "unix",

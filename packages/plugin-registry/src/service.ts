@@ -20,6 +20,10 @@ import {
   type PluginManifest
 } from "@engineering-os/contracts";
 import type { Logger } from "@engineering-os/logger";
+import {
+  logObservabilityEvent,
+  observabilityEvents
+} from "@engineering-os/observability";
 import semver from "semver";
 import { z } from "zod";
 
@@ -357,6 +361,25 @@ export class PluginRegistryService {
       this.engineeringOsVersion,
       inspectedPackage.manifest
     );
+    logObservabilityEvent(
+      this.logger,
+      "info",
+      observabilityEvents.pluginDiscovered,
+      {
+        pluginId: inspectedPackage.manifest.id,
+        version: inspectedPackage.manifest.version,
+        sourcePath: localPackagePath
+      }
+    );
+    logObservabilityEvent(
+      this.logger,
+      "info",
+      observabilityEvents.pluginValidated,
+      {
+        pluginId: inspectedPackage.manifest.id,
+        version: inspectedPackage.manifest.version
+      }
+    );
     return inspectedPackage;
   }
 
@@ -376,6 +399,39 @@ export class PluginRegistryService {
     return this.updateInstalledPluginEnabled(pluginId, false);
   }
 
+  async unregisterInstalledPlugin(pluginId: string): Promise<void> {
+    return this.runWithInstallationLock(pluginId, async () => {
+      const existingPlugin = this.options.repository.findByPluginId(pluginId);
+
+      if (!existingPlugin) {
+        throw new PluginRegistryError(
+          "PLUGIN_NOT_FOUND",
+          `Plugin '${pluginId}' is not registered.`,
+          404
+        );
+      }
+
+      if (existingPlugin.enabled) {
+        throw new PluginRegistryError(
+          "PLUGIN_MUST_BE_DISABLED",
+          `Plugin '${pluginId}' must be disabled before it can be unregistered.`,
+          409
+        );
+      }
+
+      await rm(existingPlugin.installation.rootPath, {
+        recursive: true,
+        force: true
+      });
+      this.options.repository.deleteByPluginId(pluginId);
+
+      this.logger.info("Unregistered installed plugin.", {
+        pluginId,
+        version: existingPlugin.manifest.version
+      });
+    });
+  }
+
   private updateInstalledPluginEnabled(
     pluginId: string,
     enabled: boolean
@@ -390,11 +446,24 @@ export class PluginRegistryService {
       );
     }
 
-    return this.options.repository.updateEnabled(
+    const updatedPlugin = this.options.repository.updateEnabled(
       pluginId,
       enabled,
       new Date().toISOString()
     );
+    logObservabilityEvent(
+      this.logger,
+      "info",
+      enabled
+        ? observabilityEvents.pluginEnabled
+        : observabilityEvents.pluginStopped,
+      {
+        pluginId,
+        version: updatedPlugin.manifest.version,
+        enabled
+      }
+    );
+    return updatedPlugin;
   }
 
   private async runWithInstallationLock<T>(
@@ -542,6 +611,146 @@ export class PluginRegistryService {
             this.options.repository.deleteByPluginId(
               inspectedPackage.manifest.id
             );
+          } else {
+            await rm(stagingRootPath, { recursive: true, force: true });
+          }
+
+          throw error;
+        }
+      }
+    );
+  }
+
+  async upgradeLocalPluginPackage(localPackagePath: string): Promise<{
+    readonly plugin: InstalledPlugin;
+    readonly previousManifest: PluginManifest;
+  }> {
+    const inspectedPackage =
+      await this.inspectLocalPluginPackage(localPackagePath);
+
+    return this.runWithInstallationLock(
+      inspectedPackage.manifest.id,
+      async () => {
+        const existingPlugin = this.options.repository.findByPluginId(
+          inspectedPackage.manifest.id
+        );
+
+        if (!existingPlugin) {
+          throw new PluginRegistryError(
+            "PLUGIN_NOT_FOUND",
+            `Plugin '${inspectedPackage.manifest.id}' is not registered.`,
+            404
+          );
+        }
+
+        if (
+          existingPlugin.manifest.version === inspectedPackage.manifest.version
+        ) {
+          throw new PluginRegistryError(
+            "PLUGIN_VERSION_ALREADY_INSTALLED",
+            `Plugin '${inspectedPackage.manifest.id}' version '${inspectedPackage.manifest.version}' is already installed.`,
+            409
+          );
+        }
+
+        validateCompatibleVersion(
+          this.engineeringOsVersion,
+          inspectedPackage.manifest
+        );
+
+        const previousManifest = existingPlugin.manifest;
+        const stagingRootPath = join(
+          this.options.installationsRootPath,
+          ".staging",
+          randomUUID()
+        );
+        const installationRootPath = join(
+          this.options.installationsRootPath,
+          inspectedPackage.manifest.id,
+          inspectedPackage.manifest.version
+        );
+
+        await mkdir(dirname(stagingRootPath), { recursive: true });
+
+        let finalPathCreated = false;
+
+        try {
+          if (await canAccessPath(installationRootPath)) {
+            throw new PluginRegistryError(
+              "PLUGIN_INSTALLATION_ALREADY_EXISTS",
+              `Managed installation path '${installationRootPath}' already exists.`,
+              409
+            );
+          }
+
+          await copyDirectoryRejectingSymlinks(
+            inspectedPackage.source.path,
+            stagingRootPath
+          );
+
+          const copiedPackage = await inspectResolvedPluginPackage({
+            type: "local-directory",
+            path: stagingRootPath
+          });
+
+          if (
+            JSON.stringify(copiedPackage.manifest) !==
+            JSON.stringify(inspectedPackage.manifest)
+          ) {
+            throw new PluginRegistryError(
+              "PLUGIN_INSTALLATION_VALIDATION_FAILED",
+              "Copied plugin contents did not match the validated source manifest.",
+              500
+            );
+          }
+
+          const contentHash =
+            await calculateManagedInstallationHash(stagingRootPath);
+          await mkdir(dirname(installationRootPath), { recursive: true });
+
+          try {
+            await rename(stagingRootPath, installationRootPath);
+          } catch (error) {
+            if (await canAccessPath(installationRootPath)) {
+              throw new PluginRegistryError(
+                "PLUGIN_INSTALLATION_ALREADY_EXISTS",
+                `Managed installation path '${installationRootPath}' already exists.`,
+                409,
+                error
+              );
+            }
+
+            throw error;
+          }
+
+          finalPathCreated = true;
+          const updatedAt = new Date().toISOString();
+          const upgradedPlugin = this.options.repository.updateInstallation({
+            ...existingPlugin,
+            manifest: copiedPackage.manifest,
+            installation: {
+              ...existingPlugin.installation,
+              rootPath: installationRootPath,
+              contentHash,
+              source: inspectedPackage.source
+            },
+            updatedAt
+          });
+
+          this.logger.info("Upgraded managed local plugin package.", {
+            pluginId: upgradedPlugin.pluginId,
+            previousVersion: previousManifest.version,
+            version: upgradedPlugin.manifest.version,
+            installRootPath: upgradedPlugin.installation.rootPath
+          });
+
+          return {
+            plugin: upgradedPlugin,
+            previousManifest
+          };
+        } catch (error) {
+          if (finalPathCreated) {
+            await rm(installationRootPath, { recursive: true, force: true });
           } else {
             await rm(stagingRootPath, { recursive: true, force: true });
           }

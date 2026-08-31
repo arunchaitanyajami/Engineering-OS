@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,12 +8,37 @@ import { ApplicationDatabase } from "@engineering-os/database";
 import { createLogger } from "@engineering-os/logger";
 import {
   FileMcpUserRegistrationStore,
-  McpGatewayService
+  McpGatewayService,
+  type ToolRiskClassificationInput
 } from "@engineering-os/mcp-gateway";
+import {
+  EncryptedFileSecretStore,
+  SecretService
+} from "@engineering-os/security/server";
 import {
   PluginRegistryService,
   SqlitePluginRegistryRepository
 } from "@engineering-os/plugin-registry";
+
+const classifyToolRiskForTests = (
+  input: ToolRiskClassificationInput
+): "read-only" | "write" | "destructive" | "privileged" | "unknown" => {
+  const normalized = input.name.trim().toLowerCase().replace(/[_-]+/g, " ");
+
+  if (input.annotations?.destructiveHint) {
+    return "destructive";
+  }
+
+  if (/\b(read|list|search|get|fetch|find|query)\b/.test(normalized)) {
+    return input.annotations?.readOnlyHint ? "read-only" : "read-only";
+  }
+
+  if (input.annotations?.readOnlyHint) {
+    return "unknown";
+  }
+
+  return "unknown";
+};
 
 describe("McpGatewayService", () => {
   const databases: ApplicationDatabase[] = [];
@@ -66,9 +91,20 @@ describe("McpGatewayService", () => {
                     properties: {
                       path: {
                         type: "string"
+                      },
+                      mode: {
+                        type: "string"
                       }
                     },
-                    required: ["path"]
+                    anyOf: [
+                      {
+                        required: ["path"]
+                      },
+                      {
+                        required: ["mode"]
+                      }
+                    ],
+                    additionalProperties: false
                   },
                   outputSchema: {
                     type: "object",
@@ -240,7 +276,13 @@ describe("McpGatewayService", () => {
     directories.length = 0;
   });
 
-  const createGateway = async () => {
+  const createGateway = async (
+    options: {
+      readonly startupTimeoutMs?: number;
+      readonly startupStabilityPeriodMs?: number;
+      readonly shutdownGracePeriodMs?: number;
+    } = {}
+  ) => {
     const fixturesDirectory = await mkdtemp(
       join(tmpdir(), "engineering-os-mcp-")
     );
@@ -253,12 +295,22 @@ describe("McpGatewayService", () => {
     const pluginRegistry = new PluginRegistryService({
       repository: new SqlitePluginRegistryRepository(database),
       logger: createLogger({ component: "mcp-gateway-test" }),
-      engineeringOsVersion: "0.1.0",
+      engineeringOsVersion: "0.2.0",
       installationsRootPath: join(fixturesDirectory, "managed-plugins")
     });
     const gateway = new McpGatewayService({
       installedPlugins: pluginRegistry,
-      logger: createLogger({ component: "mcp-gateway-test" })
+      logger: createLogger({ component: "mcp-gateway-test" }),
+      classifyToolRisk: (input) => classifyToolRiskForTests(input),
+      ...(options.startupTimeoutMs
+        ? { startupTimeoutMs: options.startupTimeoutMs }
+        : {}),
+      ...(options.startupStabilityPeriodMs
+        ? { startupStabilityPeriodMs: options.startupStabilityPeriodMs }
+        : {}),
+      ...(options.shutdownGracePeriodMs
+        ? { shutdownGracePeriodMs: options.shutdownGracePeriodMs }
+        : {})
     });
 
     return {
@@ -522,6 +574,42 @@ describe("McpGatewayService", () => {
     ]);
   });
 
+  it("rejects persisting literal secret-like user MCP environment values", async () => {
+    const fixturesDirectory = await mkdtemp(
+      join(tmpdir(), "engineering-os-mcp-")
+    );
+    directories.push(fixturesDirectory);
+    const store = new FileMcpUserRegistrationStore(
+      join(fixturesDirectory, "mcp-user-registrations.json")
+    );
+
+    await expect(
+      store.save([
+        {
+          id: "user-filesystem",
+          source: {
+            type: "user"
+          },
+          name: "User Filesystem",
+          transport: {
+            type: "stdio",
+            command: "node",
+            args: ["./index.js"],
+            cwd: fixturesDirectory,
+            env: {
+              API_KEY: "plaintext-secret"
+            }
+          },
+          enabled: true,
+          timeoutMs: 10_000
+        }
+      ])
+    ).rejects.toMatchObject({
+      code: "MCP_USER_REGISTRATION_LITERAL_SECRET_FORBIDDEN",
+      statusCode: 400
+    });
+  });
+
   it("reflects plugin enablement in MCP registration status", async () => {
     const { fixturesDirectory, pluginRegistry, gateway } =
       await createGateway();
@@ -663,6 +751,8 @@ describe("McpGatewayService", () => {
       healthState: "healthy",
       status: "registered",
       discoveryStatus: "discovered",
+      processId: expect.any(Number),
+      startupDurationMs: expect.any(Number),
       catalog: {
         tools: [
           {
@@ -696,6 +786,48 @@ describe("McpGatewayService", () => {
         ]
       }
     });
+  });
+
+  it("restarts MCP stdio servers after an unexpected post-startup exit", async () => {
+    const crashAfterReadyScript = defaultMcpServerScript.replace(
+      `        case "notifications/initialized":
+          return;`,
+      `        case "notifications/initialized":
+          setTimeout(() => process.exit(17), 1_000);
+          return;`
+    );
+    const { fixturesDirectory, pluginRegistry, gateway } =
+      await createGateway();
+    const { packageDirectory } = await createPluginPackage(fixturesDirectory, {
+      serverScript: crashAfterReadyScript
+    });
+
+    await pluginRegistry.registerLocalPluginPackage(packageDirectory);
+    pluginRegistry.enableInstalledPlugin("com.engineering-os.mcp-plugin");
+
+    const registrationId = "com.engineering-os.mcp-plugin:filesystem";
+    await gateway.startServer(registrationId);
+
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt <= 10_000) {
+      const health = gateway.inspectServerHealth(registrationId);
+
+      if (health.restartCount >= 1 && health.healthState === "healthy") {
+        expect(health).toMatchObject({
+          healthState: "healthy",
+          restartCount: 1
+        });
+        await gateway.stopServer(registrationId);
+        return;
+      }
+
+      await new Promise((resolve) => {
+        setTimeout(resolve, 50);
+      });
+    }
+
+    throw new Error("MCP server did not restart after an unexpected exit.");
   });
 
   it("executes discovered MCP tools through the gateway boundary", async () => {
@@ -752,6 +884,617 @@ describe("McpGatewayService", () => {
           echoedPath: "/workspace/README.md"
         }
       }
+    });
+  });
+
+  it("validates MCP tool arguments against discovered schemas before invocation", async () => {
+    const { fixturesDirectory, gateway } = await createGateway();
+    const callCountPath = join(fixturesDirectory, "tool-call-count.txt");
+    const { serverDirectory } = await createLocalCommandServer(
+      fixturesDirectory,
+      {
+        serverScript: `
+          const { readFileSync, writeFileSync } = require("node:fs");
+
+          let buffer = "";
+          const writeMessage = (message) => {
+            process.stdout.write(JSON.stringify(message) + "\\n");
+          };
+          const incrementCount = () => {
+            let currentCount = 0;
+            try {
+              currentCount = Number(readFileSync(${JSON.stringify(callCountPath)}, "utf8"));
+            } catch {}
+            writeFileSync(${JSON.stringify(callCountPath)}, String(currentCount + 1), "utf8");
+          };
+
+          const handleMessage = (message) => {
+            if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") {
+              return;
+            }
+
+            switch (message.method) {
+              case "initialize":
+                writeMessage({
+                  jsonrpc: "2.0",
+                  id: message.id,
+                  result: {
+                    protocolVersion: message.params?.protocolVersion ?? "2025-06-18",
+                    capabilities: { tools: {} },
+                    serverInfo: { name: "strict-fixture", version: "1.0.0" }
+                  }
+                });
+                return;
+              case "notifications/initialized":
+                return;
+              case "tools/list":
+                writeMessage({
+                  jsonrpc: "2.0",
+                  id: message.id,
+                  result: {
+                    tools: [
+                      {
+                        name: "read_workspace",
+                        description: "Strict schema tool.",
+                        inputSchema: {
+                          type: "object",
+                          properties: {
+                            path: { type: "string" },
+                            filters: {
+                              type: "object",
+                              properties: {
+                                tags: {
+                                  type: "array",
+                                  items: { type: "string" }
+                                },
+                                recurse: { type: "boolean" }
+                              },
+                              required: ["tags"],
+                              additionalProperties: false
+                            }
+                          },
+                          required: ["path", "filters"],
+                          additionalProperties: false
+                        },
+                        outputSchema: {
+                          type: "object",
+                          properties: {
+                            ok: { type: "boolean" }
+                          },
+                          required: ["ok"]
+                        }
+                      }
+                    ]
+                  }
+                });
+                return;
+              case "tools/call":
+                incrementCount();
+                writeMessage({
+                  jsonrpc: "2.0",
+                  id: message.id,
+                  result: {
+                    content: [
+                      {
+                        type: "text",
+                        text: "validated"
+                      }
+                    ],
+                    structuredContent: {
+                      ok: true
+                    }
+                  }
+                });
+                return;
+              default:
+                return;
+            }
+          };
+
+          process.stdin.on("data", (chunk) => {
+            buffer += chunk.toString("utf8");
+            while (true) {
+              const newlineIndex = buffer.indexOf("\\n");
+              if (newlineIndex === -1) {
+                break;
+              }
+              const line = buffer.slice(0, newlineIndex).replace(/\\r$/, "");
+              buffer = buffer.slice(newlineIndex + 1);
+              if (!line.trim()) {
+                continue;
+              }
+              handleMessage(JSON.parse(line));
+            }
+          });
+
+          process.on("SIGTERM", () => {
+            process.exit(0);
+          });
+        `
+      }
+    );
+
+    gateway.registerServer({
+      id: "strict-filesystem",
+      source: {
+        type: "user"
+      },
+      name: "Strict Filesystem",
+      transport: {
+        type: "stdio",
+        command: "node",
+        args: ["./index.js"],
+        cwd: serverDirectory
+      },
+      enabled: true,
+      timeoutMs: 10_000
+    });
+    await gateway.startServer("user:strict-filesystem");
+
+    const executionContext = {
+      actor: {
+        type: "agent" as const,
+        id: "architect"
+      },
+      correlationId: "corr-validate",
+      approvalMode: "none" as const
+    };
+
+    await expect(
+      gateway.executeTool({
+        toolId: "user.strict-filesystem.tool.read_workspace",
+        arguments: {
+          filters: {
+            tags: ["docs"]
+          }
+        },
+        executionContext
+      })
+    ).rejects.toMatchObject({
+      code: "MCP_GATEWAY_TOOL_ARGUMENTS_INVALID",
+      statusCode: 400
+    });
+    await expect(
+      gateway.executeTool({
+        toolId: "user.strict-filesystem.tool.read_workspace",
+        arguments: {
+          path: 42,
+          filters: {
+            tags: ["docs"]
+          }
+        },
+        executionContext
+      })
+    ).rejects.toMatchObject({
+      code: "MCP_GATEWAY_TOOL_ARGUMENTS_INVALID",
+      statusCode: 400
+    });
+    await expect(
+      gateway.executeTool({
+        toolId: "user.strict-filesystem.tool.read_workspace",
+        arguments: {
+          path: "/workspace/README.md",
+          filters: {
+            tags: ["docs"]
+          },
+          unexpected: true
+        },
+        executionContext
+      })
+    ).rejects.toMatchObject({
+      code: "MCP_GATEWAY_TOOL_ARGUMENTS_INVALID",
+      statusCode: 400
+    });
+    await expect(
+      gateway.executeTool({
+        toolId: "user.strict-filesystem.tool.read_workspace",
+        arguments: {
+          path: "/workspace/README.md",
+          filters: {
+            tags: [7]
+          }
+        },
+        executionContext
+      })
+    ).rejects.toMatchObject({
+      code: "MCP_GATEWAY_TOOL_ARGUMENTS_INVALID",
+      statusCode: 400
+    });
+
+    await expect(readFile(callCountPath, "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+
+    await expect(
+      gateway.executeTool({
+        toolId: "user.strict-filesystem.tool.read_workspace",
+        arguments: {
+          path: "/workspace/README.md",
+          filters: {
+            tags: ["docs"],
+            recurse: true
+          }
+        },
+        executionContext
+      })
+    ).resolves.toMatchObject({
+      status: "success"
+    });
+
+    await expect(readFile(callCountPath, "utf8")).resolves.toBe("1");
+  });
+
+  it("fails startup when a discovered tool exposes an invalid JSON Schema", async () => {
+    const { fixturesDirectory, gateway } = await createGateway();
+    const { serverDirectory } = await createLocalCommandServer(
+      fixturesDirectory,
+      {
+        serverScript: `
+          let buffer = "";
+          const writeMessage = (message) => {
+            process.stdout.write(JSON.stringify(message) + "\\n");
+          };
+          const handleMessage = (message) => {
+            if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") {
+              return;
+            }
+
+            switch (message.method) {
+              case "initialize":
+                writeMessage({
+                  jsonrpc: "2.0",
+                  id: message.id,
+                  result: {
+                    protocolVersion: message.params?.protocolVersion ?? "2025-06-18",
+                    capabilities: { tools: {} },
+                    serverInfo: { name: "invalid-schema", version: "1.0.0" }
+                  }
+                });
+                return;
+              case "notifications/initialized":
+                return;
+              case "tools/list":
+                writeMessage({
+                  jsonrpc: "2.0",
+                  id: message.id,
+                  result: {
+                    tools: [
+                      {
+                        name: "broken_tool",
+                        inputSchema: {
+                          type: "object",
+                          properties: {
+                            foo: {
+                              type: "string",
+                              minimum: "not-a-number"
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                });
+                return;
+              default:
+                return;
+            }
+          };
+
+          process.stdin.on("data", (chunk) => {
+            buffer += chunk.toString("utf8");
+            while (true) {
+              const newlineIndex = buffer.indexOf("\\n");
+              if (newlineIndex === -1) {
+                break;
+              }
+              const line = buffer.slice(0, newlineIndex).replace(/\\r$/, "");
+              buffer = buffer.slice(newlineIndex + 1);
+              if (!line.trim()) {
+                continue;
+              }
+              handleMessage(JSON.parse(line));
+            }
+          });
+        `
+      }
+    );
+
+    gateway.registerServer({
+      id: "invalid-schema",
+      source: {
+        type: "user"
+      },
+      name: "Invalid Schema",
+      transport: {
+        type: "stdio",
+        command: "node",
+        args: ["./index.js"],
+        cwd: serverDirectory
+      },
+      enabled: true,
+      timeoutMs: 10_000
+    });
+
+    await expect(
+      gateway.startServer("user:invalid-schema")
+    ).rejects.toMatchObject({
+      code: "MCP_GATEWAY_SERVER_START_FAILED"
+    });
+    expect(gateway.inspectServerHealth("user:invalid-schema")).toMatchObject({
+      discoveryStatus: "failed",
+      lastError:
+        "Tool 'user.invalid-schema.tool.broken_tool' exposes an invalid JSON Schema."
+    });
+  });
+
+  it("fails startup when capability discovery hangs after initialization", async () => {
+    const { fixturesDirectory, gateway } = await createGateway({
+      startupTimeoutMs: 200
+    });
+    const { serverDirectory } = await createLocalCommandServer(
+      fixturesDirectory,
+      {
+        serverScript: `
+          let buffer = "";
+          const writeMessage = (message) => {
+            process.stdout.write(JSON.stringify(message) + "\\n");
+          };
+          const handleMessage = (message) => {
+            if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") {
+              return;
+            }
+
+            switch (message.method) {
+              case "initialize":
+                writeMessage({
+                  jsonrpc: "2.0",
+                  id: message.id,
+                  result: {
+                    protocolVersion: message.params?.protocolVersion ?? "2025-06-18",
+                    capabilities: { tools: {} },
+                    serverInfo: { name: "hang-discovery", version: "1.0.0" }
+                  }
+                });
+                return;
+              case "notifications/initialized":
+                return;
+              case "tools/list":
+                return;
+              default:
+                return;
+            }
+          };
+
+          process.stdin.on("data", (chunk) => {
+            buffer += chunk.toString("utf8");
+            while (true) {
+              const newlineIndex = buffer.indexOf("\\n");
+              if (newlineIndex === -1) {
+                break;
+              }
+              const line = buffer.slice(0, newlineIndex).replace(/\\r$/, "");
+              buffer = buffer.slice(newlineIndex + 1);
+              if (!line.trim()) {
+                continue;
+              }
+              handleMessage(JSON.parse(line));
+            }
+          });
+
+          process.on("SIGTERM", () => {
+            process.exit(0);
+          });
+        `
+      }
+    );
+
+    gateway.registerServer({
+      id: "hang-discovery",
+      source: {
+        type: "user"
+      },
+      name: "Hang Discovery",
+      transport: {
+        type: "stdio",
+        command: "node",
+        args: ["./index.js"],
+        cwd: serverDirectory
+      },
+      enabled: true,
+      timeoutMs: 10_000
+    });
+
+    await expect(
+      gateway.startServer("user:hang-discovery")
+    ).rejects.toMatchObject({
+      code: "MCP_GATEWAY_SERVER_START_FAILED"
+    });
+    expect(gateway.inspectServerHealth("user:hang-discovery")).toMatchObject({
+      discoveryStatus: "failed",
+      lastError:
+        "MCP server 'user:hang-discovery' did not complete startup before the timeout expired."
+    });
+  });
+
+  it("fails startup when capability discovery repeats a cursor", async () => {
+    const { fixturesDirectory, gateway } = await createGateway({
+      startupTimeoutMs: 500
+    });
+    const { serverDirectory } = await createLocalCommandServer(
+      fixturesDirectory,
+      {
+        serverScript: `
+          let buffer = "";
+          const writeMessage = (message) => {
+            process.stdout.write(JSON.stringify(message) + "\\n");
+          };
+          const handleMessage = (message) => {
+            if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") {
+              return;
+            }
+
+            switch (message.method) {
+              case "initialize":
+                writeMessage({
+                  jsonrpc: "2.0",
+                  id: message.id,
+                  result: {
+                    protocolVersion: message.params?.protocolVersion ?? "2025-06-18",
+                    capabilities: { tools: {} },
+                    serverInfo: { name: "repeat-cursor", version: "1.0.0" }
+                  }
+                });
+                return;
+              case "notifications/initialized":
+                return;
+              case "tools/list":
+                writeMessage({
+                  jsonrpc: "2.0",
+                  id: message.id,
+                  result: {
+                    tools: [],
+                    nextCursor: "same-page"
+                  }
+                });
+                return;
+              default:
+                return;
+            }
+          };
+
+          process.stdin.on("data", (chunk) => {
+            buffer += chunk.toString("utf8");
+            while (true) {
+              const newlineIndex = buffer.indexOf("\\n");
+              if (newlineIndex === -1) {
+                break;
+              }
+              const line = buffer.slice(0, newlineIndex).replace(/\\r$/, "");
+              buffer = buffer.slice(newlineIndex + 1);
+              if (!line.trim()) {
+                continue;
+              }
+              handleMessage(JSON.parse(line));
+            }
+          });
+        `
+      }
+    );
+
+    gateway.registerServer({
+      id: "repeat-cursor",
+      source: {
+        type: "user"
+      },
+      name: "Repeat Cursor",
+      transport: {
+        type: "stdio",
+        command: "node",
+        args: ["./index.js"],
+        cwd: serverDirectory
+      },
+      enabled: true,
+      timeoutMs: 10_000
+    });
+
+    await expect(
+      gateway.startServer("user:repeat-cursor")
+    ).rejects.toMatchObject({
+      code: "MCP_GATEWAY_SERVER_START_FAILED",
+      cause: expect.objectContaining({
+        code: "MCP_GATEWAY_DISCOVERY_CURSOR_REPEATED"
+      })
+    });
+  });
+
+  it("fails startup when capability discovery exceeds the maximum page count", async () => {
+    const { fixturesDirectory, gateway } = await createGateway({
+      startupTimeoutMs: 1_000
+    });
+    const { serverDirectory } = await createLocalCommandServer(
+      fixturesDirectory,
+      {
+        serverScript: `
+          let buffer = "";
+          let page = 0;
+          const writeMessage = (message) => {
+            process.stdout.write(JSON.stringify(message) + "\\n");
+          };
+          const handleMessage = (message) => {
+            if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") {
+              return;
+            }
+
+            switch (message.method) {
+              case "initialize":
+                writeMessage({
+                  jsonrpc: "2.0",
+                  id: message.id,
+                  result: {
+                    protocolVersion: message.params?.protocolVersion ?? "2025-06-18",
+                    capabilities: { tools: {} },
+                    serverInfo: { name: "many-pages", version: "1.0.0" }
+                  }
+                });
+                return;
+              case "notifications/initialized":
+                return;
+              case "tools/list":
+                page += 1;
+                writeMessage({
+                  jsonrpc: "2.0",
+                  id: message.id,
+                  result: {
+                    tools: [],
+                    nextCursor: "page-" + page
+                  }
+                });
+                return;
+              default:
+                return;
+            }
+          };
+
+          process.stdin.on("data", (chunk) => {
+            buffer += chunk.toString("utf8");
+            while (true) {
+              const newlineIndex = buffer.indexOf("\\n");
+              if (newlineIndex === -1) {
+                break;
+              }
+              const line = buffer.slice(0, newlineIndex).replace(/\\r$/, "");
+              buffer = buffer.slice(newlineIndex + 1);
+              if (!line.trim()) {
+                continue;
+              }
+              handleMessage(JSON.parse(line));
+            }
+          });
+        `
+      }
+    );
+
+    gateway.registerServer({
+      id: "many-pages",
+      source: {
+        type: "user"
+      },
+      name: "Many Pages",
+      transport: {
+        type: "stdio",
+        command: "node",
+        args: ["./index.js"],
+        cwd: serverDirectory
+      },
+      enabled: true,
+      timeoutMs: 10_000
+    });
+
+    await expect(gateway.startServer("user:many-pages")).rejects.toMatchObject({
+      code: "MCP_GATEWAY_SERVER_START_FAILED",
+      cause: expect.objectContaining({
+        code: "MCP_GATEWAY_DISCOVERY_PAGE_LIMIT_EXCEEDED"
+      })
     });
   });
 
@@ -1131,6 +1874,49 @@ describe("McpGatewayService", () => {
       code: "MCP_GATEWAY_SECRET_REFERENCES_UNSUPPORTED",
       statusCode: 501
     });
+  });
+
+  it("resolves plugin secret references when a secret store is configured", async () => {
+    const secretsDirectory = await mkdtemp(
+      join(tmpdir(), "engineering-os-mcp-secrets-")
+    );
+    directories.push(secretsDirectory);
+    const secretStore = new SecretService(
+      await EncryptedFileSecretStore.open(secretsDirectory)
+    );
+    const { fixturesDirectory, pluginRegistry } = await createGateway();
+    const gatewayWithSecrets = new McpGatewayService({
+      installedPlugins: pluginRegistry,
+      logger: createLogger({ component: "mcp-gateway-test" }),
+      classifyToolRisk: (input) => classifyToolRiskForTests(input),
+      secretStore
+    });
+    const { packageDirectory } = await createPluginPackage(fixturesDirectory, {
+      env: {
+        API_TOKEN: {
+          key: "api-token"
+        }
+      }
+    });
+    const installedPlugin =
+      await pluginRegistry.registerLocalPluginPackage(packageDirectory);
+
+    await secretStore.set(
+      installedPlugin.pluginId,
+      "api-token",
+      "resolved-token"
+    );
+    pluginRegistry.enableInstalledPlugin(installedPlugin.pluginId);
+
+    await expect(
+      gatewayWithSecrets.startServer("com.engineering-os.mcp-plugin:filesystem")
+    ).resolves.toMatchObject({
+      healthState: "healthy"
+    });
+
+    await gatewayWithSecrets.stopServer(
+      "com.engineering-os.mcp-plugin:filesystem"
+    );
   });
 
   it("rejects stdio servers that exit before startup stabilizes", async () => {

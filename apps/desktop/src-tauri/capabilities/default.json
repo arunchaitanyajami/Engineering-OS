@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Main window capability set for the Engineering OS desktop shell.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "dialog:default"]
 }

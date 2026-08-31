@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
+import { Ajv } from "ajv";
+import type { ErrorObject, ValidateFunction } from "ajv";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import {
@@ -11,6 +13,8 @@ import {
   toolExecutionRequestSchema,
   mcpCatalogSnapshotSchema,
   mcpServerRegistrationSchema,
+  promptDescriptorSchema,
+  resourceDescriptorSchema,
   type CapabilityContent,
   type McpCapabilityDiscoveryStatus,
   mcpServerHealthSnapshotSchema,
@@ -22,12 +26,23 @@ import {
   type ResourceDescriptor,
   type RegisteredMcpServer,
   type McpToolExecutionRecord,
+  toolDescriptorSchema,
   type ToolDescriptor,
   type ToolExecutionRequest,
-  type ToolExecutionResult
+  type ToolExecutionResult,
+  type ToolAnnotations,
+  type ToolRiskLevel,
+  type GatewayEnvironmentValue,
+  type SecretStore
 } from "@engineering-os/contracts/unstable-runtime";
 import type { Logger } from "@engineering-os/logger";
+import {
+  classifyError,
+  logObservabilityEvent,
+  observabilityEvents
+} from "@engineering-os/observability";
 import type { InstalledPlugin } from "@engineering-os/plugin-registry";
+import { ZodError } from "zod";
 
 import { ManagedStdioClientTransport } from "./managed-stdio-client-transport.js";
 
@@ -36,11 +51,27 @@ export interface InstalledPluginCatalog {
   getInstalledPlugin(pluginId: string): InstalledPlugin | null;
 }
 
+export interface ToolRiskClassificationInput {
+  readonly id: string;
+  readonly name: string;
+  readonly annotations?: ToolAnnotations;
+}
+
 export interface McpGatewayServiceOptions {
   readonly installedPlugins: InstalledPluginCatalog;
   readonly logger: Logger;
   readonly systemRegistrations?: readonly McpServerRegistration[];
   readonly userRegistrations?: readonly McpServerRegistration[];
+  readonly startupTimeoutMs?: number;
+  readonly startupStabilityPeriodMs?: number;
+  readonly shutdownGracePeriodMs?: number;
+  readonly restartWindowMs?: number;
+  readonly maxRestartsPerWindow?: number;
+  readonly restartBackoffMs?: number;
+  readonly classifyToolRisk?: (
+    input: ToolRiskClassificationInput
+  ) => ToolRiskLevel;
+  readonly secretStore?: SecretStore;
 }
 
 export interface McpGatewayCapabilityQuery {
@@ -50,6 +81,7 @@ export interface McpGatewayCapabilityQuery {
 
 export interface McpGatewayToolExecutionOptions {
   readonly signal?: AbortSignal;
+  readonly executionId?: string;
 }
 
 export interface McpToolExecutionListOptions {
@@ -68,6 +100,23 @@ export interface McpToolExecutionPageOptions extends McpToolExecutionListOptions
 export interface McpToolExecutionPage {
   readonly executions: readonly McpToolExecutionRecord[];
   readonly nextCursor?: string;
+}
+
+interface ToolArgumentValidationIssue {
+  readonly path: string;
+  readonly message: string;
+  readonly keyword: string;
+}
+
+interface ParsedValidationIssue {
+  readonly path: readonly (string | number)[];
+  readonly message?: string;
+}
+
+interface StartupDeadline {
+  readonly signal: AbortSignal;
+  remainingMs(): number;
+  dispose(): void;
 }
 
 export class McpGatewayError extends Error {
@@ -158,9 +207,12 @@ const createEmptyCatalog = (): McpCatalogSnapshot =>
 const DEFAULT_STARTUP_TIMEOUT_MS = 3_000;
 const DEFAULT_STARTUP_STABILITY_PERIOD_MS = 250;
 const DEFAULT_SHUTDOWN_GRACE_PERIOD_MS = 3_000;
+const DEFAULT_RESTART_WINDOW_MS = 60_000;
+const DEFAULT_MAX_RESTARTS_PER_WINDOW = 3;
+const DEFAULT_RESTART_BACKOFF_MS = 250;
 const MCP_GATEWAY_CLIENT_INFO = {
   name: "engineering-os-mcp-gateway",
-  version: "0.1.0"
+  version: "0.2.0"
 } as const;
 
 type McpListedTool = Awaited<ReturnType<Client["listTools"]>>["tools"][number];
@@ -189,10 +241,12 @@ const allowlistedEnvironmentKeys = [
 
 interface ManagedMcpServerRuntime {
   readonly registrationId: string;
+  readonly serverId: string;
   readonly transport: ManagedStdioClientTransport;
   readonly client: Client;
   readonly logger: Logger;
   expectedExit: boolean;
+  processId?: number;
 }
 
 interface ManagedToolExecution {
@@ -208,7 +262,10 @@ const toServerHealthSnapshot = (
     readonly isRunning?: boolean;
     readonly discoveryStatus?: McpCapabilityDiscoveryStatus;
     readonly catalog?: McpCatalogSnapshot;
+    readonly processId?: number;
+    readonly startupDurationMs?: number;
     readonly lastError?: string;
+    readonly restartCount?: number;
   } = {}
 ): McpServerHealthSnapshot =>
   mcpServerHealthSnapshotSchema.parse({
@@ -226,6 +283,11 @@ const toServerHealthSnapshot = (
         : "unknown",
     discoveryStatus: options.discoveryStatus ?? "not-started",
     catalog: options.catalog ?? createEmptyCatalog(),
+    ...(options.processId ? { processId: options.processId } : {}),
+    ...(options.startupDurationMs !== undefined
+      ? { startupDurationMs: options.startupDurationMs }
+      : {}),
+    restartCount: options.restartCount ?? 0,
     ...(options.lastError ? { lastError: options.lastError } : {})
   });
 
@@ -267,18 +329,32 @@ const createCapabilityIdentifier = (
   return `${registrationScope}.${capabilityType}.${normalizeIdentifierSegment(sourceValue).slice(0, preservedLength)}-${hash}`;
 };
 
-const inferToolRiskLevel = (
-  annotations: McpListedTool["annotations"]
-): ToolDescriptor["riskLevel"] => {
-  if (annotations?.destructiveHint) {
-    return "destructive";
-  }
+const normalizeToolDescriptor = (
+  registration: RegisteredMcpServer,
+  tool: McpListedTool,
+  resolveRiskLevel: (input: ToolRiskClassificationInput) => ToolRiskLevel
+): ToolDescriptor => {
+  const id = createCapabilityIdentifier(registration, "tool", tool.name);
 
-  if (annotations?.readOnlyHint) {
-    return "read-only";
-  }
-
-  return "unknown";
+  return {
+    id,
+    serverId: registration.serverId,
+    ...(registration.source.type === "plugin"
+      ? { pluginId: registration.source.pluginId }
+      : {}),
+    name: tool.name,
+    ...((tool.title ?? tool.annotations?.title)
+      ? { title: tool.title ?? tool.annotations?.title }
+      : {}),
+    ...(tool.description ? { description: tool.description } : {}),
+    inputSchema: tool.inputSchema,
+    ...(tool.annotations ? { annotations: tool.annotations } : {}),
+    riskLevel: resolveRiskLevel({
+      id,
+      name: tool.name,
+      ...(tool.annotations ? { annotations: tool.annotations } : {})
+    })
+  };
 };
 
 const isAbortError = (error: unknown): boolean =>
@@ -289,6 +365,7 @@ const isAbortError = (error: unknown): boolean =>
 
 const MAX_RETAINED_TOOL_EXECUTIONS = 200;
 const TOOL_EXECUTION_RETENTION_MS = 15 * 60 * 1_000;
+const MAX_DISCOVERY_PAGES = 100;
 
 const toPromptArgumentsSchema = (
   prompt: McpListedPrompt | undefined
@@ -318,25 +395,6 @@ const toPromptArgumentsSchema = (
     ...(requiredArguments.length > 0 ? { required: requiredArguments } : {})
   };
 };
-
-const normalizeToolDescriptor = (
-  registration: RegisteredMcpServer,
-  tool: McpListedTool
-): ToolDescriptor => ({
-  id: createCapabilityIdentifier(registration, "tool", tool.name),
-  serverId: registration.serverId,
-  ...(registration.source.type === "plugin"
-    ? { pluginId: registration.source.pluginId }
-    : {}),
-  name: tool.name,
-  ...((tool.title ?? tool.annotations?.title)
-    ? { title: tool.title ?? tool.annotations?.title }
-    : {}),
-  ...(tool.description ? { description: tool.description } : {}),
-  inputSchema: tool.inputSchema,
-  ...(tool.annotations ? { annotations: tool.annotations } : {}),
-  riskLevel: inferToolRiskLevel(tool.annotations)
-});
 
 const normalizeResourceDescriptor = (
   registration: RegisteredMcpServer,
@@ -370,15 +428,23 @@ const normalizePromptDescriptor = (
 
 export class McpGatewayService {
   private readonly logger: Logger;
+  private readonly schemaValidator = new Ajv({
+    allErrors: true,
+    allowUnionTypes: true,
+    strict: false,
+    validateSchema: true
+  });
   private readonly gatewayRegistrations = new Map<
     string,
     McpServerRegistration
   >();
+  private readonly toolValidators = new Map<string, ValidateFunction>();
   private readonly toolExecutions = new Map<string, ManagedToolExecution>();
   private readonly toolExecutionOrder: string[] = [];
   private readonly runtimes = new Map<string, ManagedMcpServerRuntime>();
   private readonly lifecycleLocks = new Map<string, Promise<void>>();
   private readonly lastErrors = new Map<string, string>();
+  private readonly startupDurations = new Map<string, number>();
   private readonly catalogs = new Map<string, McpCatalogSnapshot>();
   private readonly discoveryStatuses = new Map<
     string,
@@ -387,6 +453,15 @@ export class McpGatewayService {
   private readonly startupTimeoutMs: number;
   private readonly startupStabilityPeriodMs: number;
   private readonly shutdownGracePeriodMs: number;
+  private readonly restartWindowMs: number;
+  private readonly maxRestartsPerWindow: number;
+  private readonly restartBackoffMs: number;
+  private readonly desiredRunningServers = new Set<string>();
+  private readonly crashHistory = new Map<string, number[]>();
+  private readonly restartTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
   private readonly processEnv: NodeJS.ProcessEnv;
   private disposing = false;
 
@@ -394,9 +469,17 @@ export class McpGatewayService {
     this.logger = options.logger.child({
       component: "mcp-gateway"
     });
-    this.startupTimeoutMs = DEFAULT_STARTUP_TIMEOUT_MS;
-    this.startupStabilityPeriodMs = DEFAULT_STARTUP_STABILITY_PERIOD_MS;
-    this.shutdownGracePeriodMs = DEFAULT_SHUTDOWN_GRACE_PERIOD_MS;
+    this.startupTimeoutMs =
+      options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
+    this.startupStabilityPeriodMs =
+      options.startupStabilityPeriodMs ?? DEFAULT_STARTUP_STABILITY_PERIOD_MS;
+    this.shutdownGracePeriodMs =
+      options.shutdownGracePeriodMs ?? DEFAULT_SHUTDOWN_GRACE_PERIOD_MS;
+    this.restartWindowMs = options.restartWindowMs ?? DEFAULT_RESTART_WINDOW_MS;
+    this.maxRestartsPerWindow =
+      options.maxRestartsPerWindow ?? DEFAULT_MAX_RESTARTS_PER_WINDOW;
+    this.restartBackoffMs =
+      options.restartBackoffMs ?? DEFAULT_RESTART_BACKOFF_MS;
     this.processEnv = process.env;
 
     for (const registration of options.systemRegistrations ?? []) {
@@ -482,6 +565,10 @@ export class McpGatewayService {
     const healthSnapshots = this.listRegisteredServers(options).map(
       (registration) => {
         const lastError = this.lastErrors.get(registration.registrationId);
+        const processId = this.getRuntimeProcessId(registration.registrationId);
+        const startupDurationMs = this.startupDurations.get(
+          registration.registrationId
+        );
 
         return toServerHealthSnapshot(registration, {
           isRunning: this.runtimes.has(registration.registrationId),
@@ -491,6 +578,9 @@ export class McpGatewayService {
           catalog:
             this.catalogs.get(registration.registrationId) ??
             createEmptyCatalog(),
+          ...(processId !== undefined ? { processId } : {}),
+          ...(startupDurationMs !== undefined ? { startupDurationMs } : {}),
+          restartCount: this.getRestartCount(registration.registrationId),
           ...(lastError ? { lastError } : {})
         });
       }
@@ -507,9 +597,11 @@ export class McpGatewayService {
   getCatalog(options: McpGatewayCapabilityQuery = {}): McpCatalogSnapshot {
     const relevantServers = this.listServerHealth(
       options.pluginId ? { pluginId: options.pluginId } : {}
-    ).filter((server) =>
-      options.serverId ? server.serverId === options.serverId : true
-    );
+    )
+      .filter((server) => server.enabled)
+      .filter((server) =>
+        options.serverId ? server.serverId === options.serverId : true
+      );
     const catalog = mcpCatalogSnapshotSchema.parse({
       tools: relevantServers.flatMap((server) => server.catalog.tools),
       resources: relevantServers.flatMap((server) => server.catalog.resources),
@@ -569,6 +661,26 @@ export class McpGatewayService {
     return prompts;
   }
 
+  refreshToolRiskLevels(): void {
+    for (const [registrationId, catalog] of this.catalogs) {
+      const refreshedTools = catalog.tools.map((tool) => ({
+        ...tool,
+        riskLevel: this.resolveToolRiskLevel({
+          id: tool.id,
+          name: tool.name,
+          ...(tool.annotations ? { annotations: tool.annotations } : {})
+        })
+      }));
+
+      this.setCatalog(registrationId, {
+        ...catalog,
+        tools: refreshedTools
+      });
+    }
+
+    this.logger.debug("Refreshed MCP tool risk classifications.");
+  }
+
   listUserRegistrations(): readonly McpServerRegistration[] {
     return [...this.gatewayRegistrations.values()]
       .filter((registration) => registration.source.type === "user")
@@ -614,6 +726,7 @@ export class McpGatewayService {
       }
 
       this.gatewayRegistrations.delete(registrationId);
+      this.setCatalog(registrationId, createEmptyCatalog());
       this.catalogs.delete(registrationId);
       this.discoveryStatuses.delete(registrationId);
       this.lastErrors.delete(registrationId);
@@ -646,15 +759,9 @@ export class McpGatewayService {
     this.toolExecutions.set(managedExecution.executionId, managedExecution);
     this.toolExecutionOrder.push(managedExecution.executionId);
 
-    this.logger.info("Started MCP tool execution handle.", {
-      executionId: managedExecution.executionId,
-      toolId: parsedRequest.toolId,
-      registrationId: resolvedExecution.registration.registrationId,
-      correlationId: parsedRequest.executionContext.correlationId
-    });
-
     managedExecution.completionPromise = this.executeTool(parsedRequest, {
-      signal: managedExecution.controller.signal
+      signal: managedExecution.controller.signal,
+      executionId: managedExecution.executionId
     })
       .then((result) => {
         managedExecution.record = mcpToolExecutionRecordSchema.parse({
@@ -758,19 +865,62 @@ export class McpGatewayService {
     options: McpGatewayToolExecutionOptions = {}
   ): Promise<ToolExecutionResult> {
     const parsedRequest = toolExecutionRequestSchema.parse(request);
+    const executionId = options.executionId ?? randomUUID();
+    const executionLogger = this.logger.child({
+      correlationId: parsedRequest.executionContext.correlationId
+    });
     const resolvedTool = this.resolveToolExecution(parsedRequest);
+    logObservabilityEvent(
+      executionLogger,
+      "info",
+      observabilityEvents.toolExecutionRequested,
+      {
+        executionId,
+        toolId: parsedRequest.toolId,
+        registrationId: resolvedTool.registration.registrationId,
+        serverId: resolvedTool.registration.serverId,
+        correlationId: parsedRequest.executionContext.correlationId
+      }
+    );
     const timeoutMs = this.getToolExecutionTimeoutMs(resolvedTool.registration);
     const startedAt = Date.now();
 
-    this.logger.info("Executing MCP tool.", {
-      toolId: parsedRequest.toolId,
-      registrationId: resolvedTool.registration.registrationId,
-      serverId: resolvedTool.registration.serverId,
-      actorType: parsedRequest.executionContext.actor.type,
-      actorId: parsedRequest.executionContext.actor.id,
-      correlationId: parsedRequest.executionContext.correlationId,
-      timeoutMs
-    });
+    try {
+      this.validateToolArguments(resolvedTool.tool, parsedRequest.arguments);
+    } catch (error) {
+      logObservabilityEvent(
+        executionLogger,
+        "warn",
+        observabilityEvents.toolExecutionFailed,
+        {
+          executionId,
+          toolId: parsedRequest.toolId,
+          registrationId: resolvedTool.registration.registrationId,
+          serverId: resolvedTool.registration.serverId,
+          correlationId: parsedRequest.executionContext.correlationId,
+          durationMs: Date.now() - startedAt,
+          ...classifyError(error)
+        },
+        error
+      );
+      throw error;
+    }
+
+    logObservabilityEvent(
+      executionLogger,
+      "info",
+      observabilityEvents.toolExecutionStarted,
+      {
+        executionId,
+        toolId: parsedRequest.toolId,
+        registrationId: resolvedTool.registration.registrationId,
+        serverId: resolvedTool.registration.serverId,
+        actorType: parsedRequest.executionContext.actor.type,
+        actorId: parsedRequest.executionContext.actor.id,
+        correlationId: parsedRequest.executionContext.correlationId,
+        timeoutMs
+      }
+    );
 
     try {
       const result = await resolvedTool.runtime.client.callTool(
@@ -804,13 +954,20 @@ export class McpGatewayService {
           : {})
       });
 
-      this.logger.info("Completed MCP tool execution.", {
-        toolId: parsedRequest.toolId,
-        registrationId: resolvedTool.registration.registrationId,
-        correlationId: parsedRequest.executionContext.correlationId,
-        status: normalizedResult.status,
-        durationMs: Date.now() - startedAt
-      });
+      logObservabilityEvent(
+        executionLogger,
+        "info",
+        observabilityEvents.toolExecutionCompleted,
+        {
+          executionId,
+          toolId: parsedRequest.toolId,
+          registrationId: resolvedTool.registration.registrationId,
+          serverId: resolvedTool.registration.serverId,
+          correlationId: parsedRequest.executionContext.correlationId,
+          status: normalizedResult.status,
+          durationMs: Date.now() - startedAt
+        }
+      );
 
       return normalizedResult;
     } catch (error) {
@@ -825,13 +982,20 @@ export class McpGatewayService {
           }
         });
 
-        this.logger.warn("Cancelled MCP tool execution.", {
-          toolId: parsedRequest.toolId,
-          registrationId: resolvedTool.registration.registrationId,
-          correlationId: parsedRequest.executionContext.correlationId,
-          status: cancelledResult.status,
-          durationMs: Date.now() - startedAt
-        });
+        logObservabilityEvent(
+          executionLogger,
+          "warn",
+          observabilityEvents.toolExecutionCancelled,
+          {
+            executionId,
+            toolId: parsedRequest.toolId,
+            registrationId: resolvedTool.registration.registrationId,
+            serverId: resolvedTool.registration.serverId,
+            correlationId: parsedRequest.executionContext.correlationId,
+            status: cancelledResult.status,
+            durationMs: Date.now() - startedAt
+          }
+        );
 
         return cancelledResult;
       }
@@ -850,13 +1014,20 @@ export class McpGatewayService {
           }
         });
 
-        this.logger.warn("Timed out MCP tool execution.", {
-          toolId: parsedRequest.toolId,
-          registrationId: resolvedTool.registration.registrationId,
-          correlationId: parsedRequest.executionContext.correlationId,
-          status: timeoutResult.status,
-          durationMs: Date.now() - startedAt
-        });
+        logObservabilityEvent(
+          executionLogger,
+          "warn",
+          observabilityEvents.toolExecutionFailed,
+          {
+            executionId,
+            toolId: parsedRequest.toolId,
+            registrationId: resolvedTool.registration.registrationId,
+            serverId: resolvedTool.registration.serverId,
+            correlationId: parsedRequest.executionContext.correlationId,
+            status: timeoutResult.status,
+            durationMs: Date.now() - startedAt
+          }
+        );
 
         return timeoutResult;
       }
@@ -874,14 +1045,22 @@ export class McpGatewayService {
         }
       });
 
-      this.logger.warn("Failed MCP tool execution.", {
-        toolId: parsedRequest.toolId,
-        registrationId: resolvedTool.registration.registrationId,
-        correlationId: parsedRequest.executionContext.correlationId,
-        status: failedResult.status,
-        durationMs: Date.now() - startedAt,
-        error: failedResult.error?.message
-      });
+      logObservabilityEvent(
+        executionLogger,
+        "warn",
+        observabilityEvents.toolExecutionFailed,
+        {
+          executionId,
+          toolId: parsedRequest.toolId,
+          registrationId: resolvedTool.registration.registrationId,
+          serverId: resolvedTool.registration.serverId,
+          correlationId: parsedRequest.executionContext.correlationId,
+          status: failedResult.status,
+          durationMs: Date.now() - startedAt,
+          ...classifyError(error),
+          error: failedResult.error?.message
+        }
+      );
 
       return failedResult;
     }
@@ -890,95 +1069,154 @@ export class McpGatewayService {
   async startServer(registrationId: string): Promise<McpServerHealthSnapshot> {
     return this.runWithLifecycleLock(registrationId, async () => {
       this.throwIfDisposing();
-      const registration = this.requireRegisteredServer(registrationId);
-
-      if (!registration.enabled) {
-        throw new McpGatewayError(
-          "MCP_GATEWAY_SERVER_DISABLED",
-          `MCP server '${registrationId}' is disabled.`,
-          409
-        );
-      }
-
-      if (this.runtimes.has(registrationId)) {
-        throw new McpGatewayError(
-          "MCP_GATEWAY_SERVER_ALREADY_RUNNING",
-          `MCP server '${registrationId}' is already running.`,
-          409
-        );
-      }
-
-      const transport = new ManagedStdioClientTransport({
-        command: registration.transport.command,
-        args: registration.transport.args,
-        env: this.resolveTransportEnvironment(registration),
-        ...(registration.transport.cwd
-          ? { cwd: registration.transport.cwd }
-          : {}),
-        shutdownGracePeriodMs: this.shutdownGracePeriodMs
-      });
-      const runtime: ManagedMcpServerRuntime = {
-        registrationId,
-        transport,
-        client: new Client(MCP_GATEWAY_CLIENT_INFO, {
-          capabilities: {}
-        }),
-        logger: this.logger.child({
-          component: "mcp-gateway-child",
-          correlationId: registrationId
-        }),
-        expectedExit: false
-      };
-
-      this.attachChildLogging(runtime);
-      transport.onerror = (error) => {
-        this.handleRuntimeFailure(runtime, error);
-      };
-
-      try {
-        await runtime.client.connect(runtime.transport, {
-          timeout: this.startupTimeoutMs
-        });
-        await this.discoverCapabilities(runtime, registration);
-        await this.waitForChildStability(
-          runtime,
-          this.startupStabilityPeriodMs
-        );
-        this.throwIfDisposing();
-        this.runtimes.set(registrationId, runtime);
-        const child = runtime.transport.childProcess;
-
-        if (child) {
-          child.once("exit", (code, signal) => {
-            this.handleChildExit(runtime, code, signal);
-          });
-        }
-
-        this.lastErrors.delete(registrationId);
-      } catch (error) {
-        await this.safeCloseTransport(runtime);
-        this.catalogs.set(registrationId, createEmptyCatalog());
-        this.discoveryStatuses.set(registrationId, "failed");
-        this.lastErrors.set(registrationId, this.toErrorMessage(error));
-        throw new McpGatewayError(
-          "MCP_GATEWAY_SERVER_START_FAILED",
-          `MCP server '${registrationId}' failed to start.`,
-          502,
-          error
-        );
-      }
-
-      runtime.logger.info("Started MCP stdio server.", {
-        registrationId,
-        pid: runtime.transport.pid
-      });
-
-      return this.inspectServerHealth(registrationId);
+      this.markDesiredRunning(registrationId);
+      return this.startServerInternal(registrationId);
     });
+  }
+
+  private async startServerInternal(
+    registrationId: string
+  ): Promise<McpServerHealthSnapshot> {
+    this.throwIfDisposing();
+    const registration = this.requireRegisteredServer(registrationId);
+    const startupStartedAt = Date.now();
+
+    if (!registration.enabled) {
+      throw new McpGatewayError(
+        "MCP_GATEWAY_SERVER_DISABLED",
+        `MCP server '${registrationId}' is disabled.`,
+        409
+      );
+    }
+
+    if (this.runtimes.has(registrationId)) {
+      throw new McpGatewayError(
+        "MCP_GATEWAY_SERVER_ALREADY_RUNNING",
+        `MCP server '${registrationId}' is already running.`,
+        409
+      );
+    }
+
+    logObservabilityEvent(
+      this.logger,
+      "info",
+      observabilityEvents.mcpServerStarting,
+      {
+        registrationId,
+        serverId: registration.serverId,
+        ...(registration.source.type === "plugin"
+          ? { pluginId: registration.source.pluginId }
+          : {})
+      }
+    );
+
+    const transport = new ManagedStdioClientTransport({
+      command: registration.transport.command,
+      args: registration.transport.args,
+      env: await this.resolveTransportEnvironment(registration),
+      ...(registration.transport.cwd
+        ? { cwd: registration.transport.cwd }
+        : {}),
+      shutdownGracePeriodMs: this.shutdownGracePeriodMs
+    });
+    const runtime: ManagedMcpServerRuntime = {
+      registrationId,
+      serverId: registration.serverId,
+      transport,
+      client: new Client(MCP_GATEWAY_CLIENT_INFO, {
+        capabilities: {}
+      }),
+      logger: this.logger.child({
+        component: "mcp-gateway-child",
+        correlationId: registrationId
+      }),
+      expectedExit: false
+    };
+
+    this.attachChildLogging(runtime);
+    transport.onerror = (error) => {
+      this.handleRuntimeFailure(runtime, error);
+    };
+    const startupDeadline = this.createStartupDeadline(registrationId);
+
+    try {
+      await runtime.client.connect(runtime.transport, {
+        signal: startupDeadline.signal,
+        timeout: startupDeadline.remainingMs()
+      });
+      if (
+        runtime.transport.pid !== null &&
+        runtime.transport.pid !== undefined
+      ) {
+        runtime.processId = runtime.transport.pid;
+      }
+      logObservabilityEvent(
+        runtime.logger,
+        "info",
+        observabilityEvents.mcpServerConnected,
+        {
+          registrationId,
+          serverId: registration.serverId,
+          processId: runtime.processId
+        }
+      );
+      await this.discoverCapabilities(runtime, registration, startupDeadline);
+      await this.waitForChildStability(
+        runtime,
+        this.startupStabilityPeriodMs,
+        startupDeadline.signal
+      );
+      this.throwIfDisposing();
+      this.runtimes.set(registrationId, runtime);
+      const child = runtime.transport.childProcess;
+
+      if (child) {
+        child.once("exit", (code, signal) => {
+          this.handleChildExit(runtime, code, signal);
+        });
+      }
+
+      this.lastErrors.delete(registrationId);
+      this.startupDurations.set(registrationId, Date.now() - startupStartedAt);
+    } catch (error) {
+      const processId = runtime.processId ?? runtime.transport.pid ?? undefined;
+      await this.safeCloseTransport(runtime);
+      this.setCatalog(registrationId, createEmptyCatalog());
+      this.discoveryStatuses.set(registrationId, "failed");
+      this.lastErrors.set(
+        registrationId,
+        this.toStartupErrorMessage(registrationId, error)
+      );
+      logObservabilityEvent(
+        runtime.logger,
+        "error",
+        observabilityEvents.mcpServerDisconnected,
+        {
+          registrationId,
+          serverId: registration.serverId,
+          ...(processId !== undefined ? { processId } : {}),
+          startupDurationMs: Date.now() - startupStartedAt,
+          ...classifyError(error)
+        },
+        error
+      );
+      throw new McpGatewayError(
+        "MCP_GATEWAY_SERVER_START_FAILED",
+        `MCP server '${registrationId}' failed to start.`,
+        502,
+        error
+      );
+    } finally {
+      startupDeadline.dispose();
+    }
+
+    return this.inspectServerHealth(registrationId);
   }
 
   async stopServer(registrationId: string): Promise<McpServerHealthSnapshot> {
     return this.runWithLifecycleLock(registrationId, async () => {
+      this.clearDesiredRunning(registrationId);
+      this.clearRestartTimer(registrationId);
       this.requireRegisteredServer(registrationId);
       const runtime = this.runtimes.get(registrationId);
 
@@ -1006,6 +1244,13 @@ export class McpGatewayService {
 
   async dispose(): Promise<void> {
     this.disposing = true;
+
+    for (const registrationId of [...this.restartTimers.keys()]) {
+      this.clearRestartTimer(registrationId);
+    }
+
+    this.desiredRunningServers.clear();
+
     const registrationIds = new Set<string>([
       ...this.runtimes.keys(),
       ...this.lifecycleLocks.keys()
@@ -1029,12 +1274,17 @@ export class McpGatewayService {
   inspectServerHealth(registrationId: string): McpServerHealthSnapshot {
     const registration = this.requireRegisteredServer(registrationId);
     const lastError = this.lastErrors.get(registrationId);
+    const processId = this.getRuntimeProcessId(registrationId);
+    const startupDurationMs = this.startupDurations.get(registrationId);
 
     return toServerHealthSnapshot(registration, {
       isRunning: this.runtimes.has(registrationId),
       discoveryStatus:
         this.discoveryStatuses.get(registrationId) ?? "not-started",
       catalog: this.catalogs.get(registrationId) ?? createEmptyCatalog(),
+      ...(processId !== undefined ? { processId } : {}),
+      ...(startupDurationMs !== undefined ? { startupDurationMs } : {}),
+      restartCount: this.getRestartCount(registrationId),
       ...(lastError ? { lastError } : {})
     });
   }
@@ -1099,6 +1349,114 @@ export class McpGatewayService {
     return registration.transport.type === "stdio"
       ? (registration.transport.timeoutMs ?? 30_000)
       : 30_000;
+  }
+
+  private createStartupDeadline(registrationId: string): StartupDeadline {
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, this.startupTimeoutMs);
+
+    return {
+      signal: controller.signal,
+      remainingMs: () => {
+        if (controller.signal.aborted) {
+          throw this.createStartupTimeoutError(registrationId);
+        }
+
+        const remainingMs = this.startupTimeoutMs - (Date.now() - startedAt);
+
+        if (remainingMs <= 0) {
+          throw this.createStartupTimeoutError(registrationId);
+        }
+
+        return remainingMs;
+      },
+      dispose: () => {
+        clearTimeout(timeout);
+      }
+    };
+  }
+
+  private createStartupTimeoutError(registrationId: string): McpGatewayError {
+    return new McpGatewayError(
+      "MCP_GATEWAY_STARTUP_TIMEOUT",
+      `MCP server '${registrationId}' did not complete startup before the timeout expired.`,
+      504
+    );
+  }
+
+  private validateToolArguments(
+    tool: ToolDescriptor,
+    argumentsValue: ToolExecutionRequest["arguments"]
+  ): void {
+    const validator =
+      this.toolValidators.get(tool.id) ?? this.compileToolValidator(tool);
+
+    this.toolValidators.set(tool.id, validator);
+
+    if (validator(argumentsValue)) {
+      return;
+    }
+
+    throw new McpGatewayError(
+      "MCP_GATEWAY_TOOL_ARGUMENTS_INVALID",
+      `Arguments for tool '${tool.id}' are invalid.`,
+      400,
+      this.normalizeToolArgumentValidationErrors(validator.errors)
+    );
+  }
+
+  private normalizeToolArgumentValidationErrors(
+    errors: readonly ErrorObject[] | null | undefined
+  ): readonly ToolArgumentValidationIssue[] {
+    return (errors ?? []).slice(0, 10).map((error) => ({
+      path: error.instancePath || "/",
+      message: error.message ?? "Invalid value.",
+      keyword: error.keyword
+    }));
+  }
+
+  private resolveToolRiskLevel(
+    input: ToolRiskClassificationInput
+  ): ToolRiskLevel {
+    return this.options.classifyToolRisk?.(input) ?? "unknown";
+  }
+
+  private setCatalog(
+    registrationId: string,
+    catalog: McpCatalogSnapshot
+  ): void {
+    const previousCatalog = this.catalogs.get(registrationId);
+    const compiledValidators = new Map<string, ValidateFunction>();
+
+    for (const tool of catalog.tools) {
+      compiledValidators.set(tool.id, this.compileToolValidator(tool));
+    }
+
+    for (const tool of previousCatalog?.tools ?? []) {
+      this.toolValidators.delete(tool.id);
+    }
+
+    for (const [toolId, validator] of compiledValidators) {
+      this.toolValidators.set(toolId, validator);
+    }
+
+    this.catalogs.set(registrationId, catalog);
+  }
+
+  private compileToolValidator(tool: ToolDescriptor): ValidateFunction {
+    try {
+      return this.schemaValidator.compile(tool.inputSchema);
+    } catch (error) {
+      throw new McpGatewayError(
+        "MCP_GATEWAY_TOOL_SCHEMA_INVALID",
+        `Tool '${tool.id}' exposes an invalid JSON Schema.`,
+        502,
+        error
+      );
+    }
   }
 
   private getToolExecutionListLimit(
@@ -1300,13 +1658,13 @@ export class McpGatewayService {
     }
 
     this.gatewayRegistrations.set(registrationId, registration);
-    this.catalogs.set(registrationId, createEmptyCatalog());
+    this.setCatalog(registrationId, createEmptyCatalog());
     this.discoveryStatuses.set(registrationId, "not-started");
   }
 
-  private resolveTransportEnvironment(
+  private async resolveTransportEnvironment(
     registration: RegisteredMcpServer
-  ): NodeJS.ProcessEnv {
+  ): Promise<NodeJS.ProcessEnv> {
     const environment: NodeJS.ProcessEnv = {};
 
     for (const key of allowlistedEnvironmentKeys) {
@@ -1320,18 +1678,69 @@ export class McpGatewayService {
     for (const [key, value] of Object.entries(
       registration.transport.env ?? {}
     )) {
-      if (typeof value !== "string") {
-        throw new McpGatewayError(
-          "MCP_GATEWAY_SECRET_REFERENCES_UNSUPPORTED",
-          `MCP server '${registration.registrationId}' requires secret resolution, which is not yet available.`,
-          501
-        );
-      }
-
-      environment[key] = value;
+      environment[key] = await this.resolveEnvironmentValue(
+        registration,
+        value
+      );
     }
 
     return environment;
+  }
+
+  private async resolveEnvironmentValue(
+    registration: RegisteredMcpServer,
+    value: GatewayEnvironmentValue
+  ): Promise<string> {
+    if (typeof value === "string") {
+      return value;
+    }
+
+    const secretStore = this.options.secretStore;
+
+    if (!secretStore) {
+      throw new McpGatewayError(
+        "MCP_GATEWAY_SECRET_REFERENCES_UNSUPPORTED",
+        `MCP server '${registration.registrationId}' requires secret resolution, which is not yet available.`,
+        501
+      );
+    }
+
+    if ("namespace" in value) {
+      const resolved = await secretStore.get(value.namespace, value.key);
+
+      if (resolved === null) {
+        throw new McpGatewayError(
+          "MCP_GATEWAY_SECRET_NOT_FOUND",
+          `Secret '${value.namespace}/${value.key}' is not available for MCP server '${registration.registrationId}'.`,
+          404
+        );
+      }
+
+      return resolved;
+    }
+
+    if (registration.source.type !== "plugin") {
+      throw new McpGatewayError(
+        "MCP_GATEWAY_SECRET_REFERENCE_INVALID",
+        `Plugin secret references are not supported for MCP server '${registration.registrationId}'.`,
+        409
+      );
+    }
+
+    const resolved = await secretStore.get(
+      registration.source.pluginId,
+      value.key
+    );
+
+    if (resolved === null) {
+      throw new McpGatewayError(
+        "MCP_GATEWAY_SECRET_NOT_FOUND",
+        `Secret '${registration.source.pluginId}/${value.key}' is not available for MCP server '${registration.registrationId}'.`,
+        404
+      );
+    }
+
+    return resolved;
   }
 
   private attachChildLogging(runtime: ManagedMcpServerRuntime): void {
@@ -1342,7 +1751,7 @@ export class McpGatewayService {
     lines.on("line", (line) => {
       runtime.logger.warn(line, {
         registrationId: runtime.registrationId,
-        pid: runtime.transport.pid,
+        processId: runtime.processId,
         stream: "stderr"
       });
     });
@@ -1356,7 +1765,23 @@ export class McpGatewayService {
       return;
     }
 
+    if (this.runtimes.get(runtime.registrationId) !== runtime) {
+      return;
+    }
+
     this.lastErrors.set(runtime.registrationId, this.toErrorMessage(error));
+    logObservabilityEvent(
+      runtime.logger,
+      "error",
+      observabilityEvents.mcpServerDisconnected,
+      {
+        registrationId: runtime.registrationId,
+        serverId: runtime.serverId,
+        processId: runtime.processId,
+        ...classifyError(error)
+      },
+      error
+    );
   }
 
   private handleChildExit(
@@ -1377,20 +1802,140 @@ export class McpGatewayService {
 
     const reason =
       code === null ? `signal ${signal ?? "unknown"}` : `code ${code}`;
-    this.lastErrors.set(
-      runtime.registrationId,
-      `MCP server '${runtime.registrationId}' exited unexpectedly with ${reason}.`
+    const errorMessage = `MCP server '${runtime.registrationId}' exited unexpectedly with ${reason}.`;
+    const restartCount = this.recordCrash(runtime.registrationId);
+
+    this.lastErrors.set(runtime.registrationId, errorMessage);
+    this.discoveryStatuses.set(runtime.registrationId, "failed");
+    logObservabilityEvent(
+      runtime.logger,
+      "warn",
+      observabilityEvents.mcpServerCrashed,
+      {
+        registrationId: runtime.registrationId,
+        serverId: runtime.serverId,
+        processId: runtime.processId,
+        code,
+        signal,
+        restartCount,
+        errorCode: "MCP_SERVER_PROCESS_EXITED"
+      }
     );
-    runtime.logger.warn("MCP stdio server exited unexpectedly.", {
-      registrationId: runtime.registrationId,
-      code,
-      signal
-    });
+
+    if (
+      !this.desiredRunningServers.has(runtime.registrationId) ||
+      this.disposing
+    ) {
+      return;
+    }
+
+    if (restartCount >= this.maxRestartsPerWindow) {
+      this.clearDesiredRunning(runtime.registrationId);
+      this.lastErrors.set(
+        runtime.registrationId,
+        `MCP server '${runtime.registrationId}' exceeded the restart limit after repeated crashes.`
+      );
+      return;
+    }
+
+    this.scheduleServerRestart(runtime.registrationId, errorMessage);
+  }
+
+  private scheduleServerRestart(
+    registrationId: string,
+    errorMessage: string
+  ): void {
+    this.clearRestartTimer(registrationId);
+
+    const restartTimer = globalThis.setTimeout(() => {
+      this.restartTimers.delete(registrationId);
+
+      if (
+        !this.desiredRunningServers.has(registrationId) ||
+        this.disposing ||
+        this.runtimes.has(registrationId)
+      ) {
+        return;
+      }
+
+      void this.runWithLifecycleLock(registrationId, async () => {
+        if (
+          !this.desiredRunningServers.has(registrationId) ||
+          this.disposing ||
+          this.runtimes.has(registrationId)
+        ) {
+          return;
+        }
+
+        try {
+          await this.startServerInternal(registrationId);
+        } catch (error) {
+          this.lastErrors.set(
+            registrationId,
+            this.toStartupErrorMessage(registrationId, error)
+          );
+          this.discoveryStatuses.set(registrationId, "failed");
+        }
+      }).catch((restartError) => {
+        this.lastErrors.set(registrationId, this.toErrorMessage(restartError));
+        this.discoveryStatuses.set(registrationId, "failed");
+      });
+    }, this.restartBackoffMs);
+
+    this.restartTimers.set(registrationId, restartTimer);
+    this.lastErrors.set(registrationId, errorMessage);
+  }
+
+  private recordCrash(registrationId: string): number {
+    const now = Date.now();
+    const activeWindow = (this.crashHistory.get(registrationId) ?? []).filter(
+      (timestamp) => now - timestamp <= this.restartWindowMs
+    );
+
+    activeWindow.push(now);
+    this.crashHistory.set(registrationId, activeWindow);
+    return activeWindow.length;
+  }
+
+  private getRestartCount(registrationId: string): number {
+    const now = Date.now();
+    return (
+      this.crashHistory
+        .get(registrationId)
+        ?.filter((timestamp) => now - timestamp <= this.restartWindowMs)
+        .length ?? 0
+    );
+  }
+
+  private getRuntimeProcessId(registrationId: string): number | undefined {
+    const runtime = this.runtimes.get(registrationId);
+    const processId = runtime?.processId ?? runtime?.transport.pid;
+    return processId && processId > 0 ? processId : undefined;
+  }
+
+  private markDesiredRunning(registrationId: string): void {
+    this.desiredRunningServers.add(registrationId);
+  }
+
+  private clearDesiredRunning(registrationId: string): void {
+    this.desiredRunningServers.delete(registrationId);
+  }
+
+  private clearRestartTimer(registrationId: string): void {
+    const restartTimer = this.restartTimers.get(registrationId);
+
+    if (!restartTimer) {
+      return;
+    }
+
+    clearTimeout(restartTimer);
+    this.restartTimers.delete(registrationId);
   }
 
   private waitForChildStability(
     runtime: ManagedMcpServerRuntime,
-    stabilityPeriodMs: number
+    stabilityPeriodMs: number,
+    signal: AbortSignal
   ): Promise<void> {
     const child = runtime.transport.childProcess;
 
@@ -1409,6 +1954,10 @@ export class McpGatewayService {
         cleanup();
         resolve();
       }, stabilityPeriodMs);
+      const handleAbort = () => {
+        cleanup();
+        reject(this.createStartupTimeoutError(runtime.registrationId));
+      };
       const handleError = (error: unknown) => {
         cleanup();
         reject(error);
@@ -1425,10 +1974,17 @@ export class McpGatewayService {
       };
       const cleanup = () => {
         clearTimeout(timeout);
+        signal.removeEventListener("abort", handleAbort);
         child.off("error", handleError);
         child.off("exit", handleExit);
       };
 
+      if (signal.aborted) {
+        handleAbort();
+        return;
+      }
+
+      signal.addEventListener("abort", handleAbort, { once: true });
       child.once("error", handleError);
       child.once("exit", handleExit);
     });
@@ -1436,41 +1992,77 @@ export class McpGatewayService {
 
   private async discoverCapabilities(
     runtime: ManagedMcpServerRuntime,
-    registration: RegisteredMcpServer
+    registration: RegisteredMcpServer,
+    startupDeadline: StartupDeadline
   ): Promise<void> {
-    const serverCapabilities = runtime.client.getServerCapabilities();
-    const tools = serverCapabilities?.tools
-      ? await this.listAllTools(runtime)
-      : [];
-    const resources = serverCapabilities?.resources
-      ? await this.listAllResources(runtime)
-      : [];
-    const prompts = serverCapabilities?.prompts
-      ? await this.listAllPrompts(runtime)
-      : [];
-    const catalog = mcpCatalogSnapshotSchema.parse({
-      tools: tools.map((tool) => normalizeToolDescriptor(registration, tool)),
-      resources: resources.map((resource) =>
-        normalizeResourceDescriptor(registration, resource)
-      ),
-      prompts: prompts.map((prompt) =>
-        normalizePromptDescriptor(registration, prompt)
-      )
-    });
+    try {
+      const serverCapabilities = runtime.client.getServerCapabilities();
+      const tools = serverCapabilities?.tools
+        ? await this.listAllTools(runtime, startupDeadline)
+        : [];
+      const resources = serverCapabilities?.resources
+        ? await this.listAllResources(runtime, startupDeadline)
+        : [];
+      const prompts = serverCapabilities?.prompts
+        ? await this.listAllPrompts(runtime, startupDeadline)
+        : [];
+      const catalog = mcpCatalogSnapshotSchema.parse({
+        tools: tools.map((tool) =>
+          this.normalizeDiscoveredToolDescriptor(registration, tool)
+        ),
+        resources: resources.map((resource) =>
+          this.normalizeDiscoveredResourceDescriptor(registration, resource)
+        ),
+        prompts: prompts.map((prompt) =>
+          this.normalizeDiscoveredPromptDescriptor(registration, prompt)
+        )
+      });
 
-    this.catalogs.set(registration.registrationId, catalog);
-    this.discoveryStatuses.set(registration.registrationId, "discovered");
+      this.setCatalog(registration.registrationId, catalog);
+      this.discoveryStatuses.set(registration.registrationId, "discovered");
+      logObservabilityEvent(
+        runtime.logger,
+        "info",
+        observabilityEvents.mcpServerCapabilitiesDiscovered,
+        {
+          registrationId: registration.registrationId,
+          serverId: registration.serverId,
+          processId: runtime.processId,
+          toolCount: catalog.tools.length,
+          resourceCount: catalog.resources.length,
+          promptCount: catalog.prompts.length
+        }
+      );
+    } catch (error) {
+      throw this.normalizeDiscoveryFailure(registration, error);
+    }
   }
 
   private async listAllTools(
-    runtime: ManagedMcpServerRuntime
+    runtime: ManagedMcpServerRuntime,
+    startupDeadline: StartupDeadline
   ): Promise<readonly McpListedTool[]> {
     const tools: McpListedTool[] = [];
     let cursor: string | undefined;
+    const seenCursors = new Set<string>();
+    let pageCount = 0;
 
     while (true) {
+      if (pageCount >= MAX_DISCOVERY_PAGES) {
+        throw new McpGatewayError(
+          "MCP_GATEWAY_DISCOVERY_PAGE_LIMIT_EXCEEDED",
+          `MCP tool discovery for '${runtime.registrationId}' exceeded the maximum page count.`,
+          502
+        );
+      }
+
+      pageCount += 1;
       const result = await runtime.client.listTools(
-        cursor ? { cursor } : undefined
+        cursor ? { cursor } : undefined,
+        {
+          signal: startupDeadline.signal,
+          timeout: startupDeadline.remainingMs()
+        }
       );
       tools.push(...result.tools);
 
@@ -1478,19 +2070,44 @@ export class McpGatewayService {
         return tools;
       }
 
+      if (seenCursors.has(result.nextCursor)) {
+        throw new McpGatewayError(
+          "MCP_GATEWAY_DISCOVERY_CURSOR_REPEATED",
+          `MCP tool discovery for '${runtime.registrationId}' returned a repeated cursor.`,
+          502
+        );
+      }
+
+      seenCursors.add(result.nextCursor);
       cursor = result.nextCursor;
     }
   }
 
   private async listAllResources(
-    runtime: ManagedMcpServerRuntime
+    runtime: ManagedMcpServerRuntime,
+    startupDeadline: StartupDeadline
   ): Promise<readonly McpListedResource[]> {
     const resources: McpListedResource[] = [];
     let cursor: string | undefined;
+    const seenCursors = new Set<string>();
+    let pageCount = 0;
 
     while (true) {
+      if (pageCount >= MAX_DISCOVERY_PAGES) {
+        throw new McpGatewayError(
+          "MCP_GATEWAY_DISCOVERY_PAGE_LIMIT_EXCEEDED",
+          `MCP resource discovery for '${runtime.registrationId}' exceeded the maximum page count.`,
+          502
+        );
+      }
+
+      pageCount += 1;
       const result = await runtime.client.listResources(
-        cursor ? { cursor } : undefined
+        cursor ? { cursor } : undefined,
+        {
+          signal: startupDeadline.signal,
+          timeout: startupDeadline.remainingMs()
+        }
       );
       resources.push(...result.resources);
 
@@ -1498,19 +2115,44 @@ export class McpGatewayService {
         return resources;
       }
 
+      if (seenCursors.has(result.nextCursor)) {
+        throw new McpGatewayError(
+          "MCP_GATEWAY_DISCOVERY_CURSOR_REPEATED",
+          `MCP resource discovery for '${runtime.registrationId}' returned a repeated cursor.`,
+          502
+        );
+      }
+
+      seenCursors.add(result.nextCursor);
       cursor = result.nextCursor;
     }
   }
 
   private async listAllPrompts(
-    runtime: ManagedMcpServerRuntime
+    runtime: ManagedMcpServerRuntime,
+    startupDeadline: StartupDeadline
   ): Promise<readonly McpListedPrompt[]> {
     const prompts: McpListedPrompt[] = [];
     let cursor: string | undefined;
+    const seenCursors = new Set<string>();
+    let pageCount = 0;
 
     while (true) {
+      if (pageCount >= MAX_DISCOVERY_PAGES) {
+        throw new McpGatewayError(
+          "MCP_GATEWAY_DISCOVERY_PAGE_LIMIT_EXCEEDED",
+          `MCP prompt discovery for '${runtime.registrationId}' exceeded the maximum page count.`,
+          502
+        );
+      }
+
+      pageCount += 1;
       const result = await runtime.client.listPrompts(
-        cursor ? { cursor } : undefined
+        cursor ? { cursor } : undefined,
+        {
+          signal: startupDeadline.signal,
+          timeout: startupDeadline.remainingMs()
+        }
       );
       prompts.push(...result.prompts);
 
@@ -1518,6 +2160,15 @@ export class McpGatewayService {
         return prompts;
       }
 
+      if (seenCursors.has(result.nextCursor)) {
+        throw new McpGatewayError(
+          "MCP_GATEWAY_DISCOVERY_CURSOR_REPEATED",
+          `MCP prompt discovery for '${runtime.registrationId}' returned a repeated cursor.`,
+          502
+        );
+      }
+
+      seenCursors.add(result.nextCursor);
       cursor = result.nextCursor;
     }
   }
@@ -1534,8 +2185,19 @@ export class McpGatewayService {
 
   private async stopRuntime(runtime: ManagedMcpServerRuntime): Promise<void> {
     runtime.expectedExit = true;
+    const processId = runtime.processId ?? runtime.transport.pid ?? undefined;
     await this.safeCloseTransport(runtime);
     this.runtimes.delete(runtime.registrationId);
+    logObservabilityEvent(
+      runtime.logger,
+      "info",
+      observabilityEvents.mcpServerDisconnected,
+      {
+        registrationId: runtime.registrationId,
+        serverId: runtime.serverId,
+        ...(processId !== undefined ? { processId } : {})
+      }
+    );
   }
 
   private throwIfDisposing(): void {
@@ -1598,6 +2260,302 @@ export class McpGatewayService {
     }
 
     return [];
+  }
+
+  private normalizeDiscoveredToolDescriptor(
+    registration: RegisteredMcpServer,
+    tool: McpListedTool
+  ): ToolDescriptor {
+    const normalizedTool = normalizeToolDescriptor(
+      registration,
+      tool,
+      (input) => this.resolveToolRiskLevel(input)
+    );
+
+    try {
+      return toolDescriptorSchema.parse(normalizedTool);
+    } catch (error) {
+      if (
+        error instanceof ZodError &&
+        error.issues.some((issue) => issue.path[0] === "inputSchema")
+      ) {
+        throw new McpGatewayError(
+          "MCP_GATEWAY_TOOL_SCHEMA_INVALID",
+          `Tool '${normalizedTool.id}' exposes an invalid JSON Schema.`,
+          502,
+          this.normalizeDiscoveryValidationIssues(error)
+        );
+      }
+
+      throw new McpGatewayError(
+        "MCP_GATEWAY_TOOL_DESCRIPTOR_INVALID",
+        `Tool '${normalizedTool.id}' returned an invalid descriptor during discovery.`,
+        502,
+        error instanceof ZodError
+          ? this.normalizeDiscoveryValidationIssues(error)
+          : error
+      );
+    }
+  }
+
+  private normalizeDiscoveredResourceDescriptor(
+    registration: RegisteredMcpServer,
+    resource: McpListedResource
+  ): ResourceDescriptor {
+    const normalizedResource = normalizeResourceDescriptor(
+      registration,
+      resource
+    );
+
+    try {
+      return resourceDescriptorSchema.parse(normalizedResource);
+    } catch (error) {
+      throw new McpGatewayError(
+        "MCP_GATEWAY_RESOURCE_DESCRIPTOR_INVALID",
+        `Resource '${normalizedResource.id}' returned an invalid descriptor during discovery.`,
+        502,
+        error instanceof ZodError
+          ? this.normalizeDiscoveryValidationIssues(error)
+          : error
+      );
+    }
+  }
+
+  private normalizeDiscoveredPromptDescriptor(
+    registration: RegisteredMcpServer,
+    prompt: McpListedPrompt
+  ): PromptDescriptor {
+    const normalizedPrompt = normalizePromptDescriptor(registration, prompt);
+
+    try {
+      return promptDescriptorSchema.parse(normalizedPrompt);
+    } catch (error) {
+      throw new McpGatewayError(
+        "MCP_GATEWAY_PROMPT_DESCRIPTOR_INVALID",
+        `Prompt '${normalizedPrompt.id}' returned an invalid descriptor during discovery.`,
+        502,
+        error instanceof ZodError
+          ? this.normalizeDiscoveryValidationIssues(error)
+          : error
+      );
+    }
+  }
+
+  private normalizeDiscoveryValidationIssues(error: ZodError): readonly {
+    readonly path: string;
+    readonly message: string;
+  }[] {
+    return error.issues.slice(0, 10).map((issue) => ({
+      path: issue.path.length > 0 ? `/${issue.path.join("/")}` : "/",
+      message: issue.message
+    }));
+  }
+
+  private normalizeDiscoveryFailure(
+    registration: RegisteredMcpServer,
+    error: unknown
+  ): unknown {
+    if (error instanceof McpGatewayError) {
+      return error;
+    }
+
+    const schemaError = this.createToolSchemaDiscoveryError(
+      registration,
+      error
+    );
+
+    if (schemaError) {
+      return schemaError;
+    }
+
+    return error;
+  }
+
+  private createToolSchemaDiscoveryError(
+    registration: RegisteredMcpServer,
+    error: unknown
+  ): McpGatewayError | null {
+    const issues = this.readValidationIssues(error);
+    const schemaIssue = issues?.find((issue) =>
+      issue.path.some((segment) => segment === "inputSchema")
+    );
+
+    if (!schemaIssue) {
+      return null;
+    }
+
+    const toolName = this.readDiscoveredToolName(error, schemaIssue);
+    const toolId = toolName
+      ? createCapabilityIdentifier(registration, "tool", toolName)
+      : undefined;
+
+    return new McpGatewayError(
+      "MCP_GATEWAY_TOOL_SCHEMA_INVALID",
+      toolId
+        ? `Tool '${toolId}' exposes an invalid JSON Schema.`
+        : "A discovered tool exposes an invalid JSON Schema.",
+      502,
+      issues?.slice(0, 10).map((issue) => ({
+        path: issue.path.length > 0 ? `/${issue.path.join("/")}` : "/",
+        message: issue.message ?? "Invalid value."
+      }))
+    );
+  }
+
+  private readValidationIssues(
+    error: unknown
+  ): readonly ParsedValidationIssue[] | null {
+    if (error instanceof ZodError) {
+      return error.issues;
+    }
+
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "issues" in error &&
+      Array.isArray(error.issues)
+    ) {
+      return error.issues.filter(
+        (issue): issue is ParsedValidationIssue =>
+          typeof issue === "object" &&
+          issue !== null &&
+          "path" in issue &&
+          Array.isArray(issue.path)
+      );
+    }
+
+    if (error instanceof Error) {
+      try {
+        const parsedIssues: unknown = JSON.parse(error.message);
+
+        if (
+          Array.isArray(parsedIssues) &&
+          parsedIssues.every(
+            (issue) =>
+              typeof issue === "object" &&
+              issue !== null &&
+              "path" in issue &&
+              Array.isArray(issue.path)
+          )
+        ) {
+          return parsedIssues as ParsedValidationIssue[];
+        }
+      } catch {
+        return null;
+      }
+    }
+
+    return null;
+  }
+
+  private readDiscoveredToolName(
+    error: unknown,
+    issue: ParsedValidationIssue
+  ): string | undefined {
+    const toolsIndex = issue.path.indexOf("tools");
+
+    if (toolsIndex === -1) {
+      return undefined;
+    }
+
+    const toolIndex = issue.path[toolsIndex + 1];
+
+    if (typeof toolIndex !== "number") {
+      return undefined;
+    }
+
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "input" in error &&
+      typeof error.input === "object" &&
+      error.input !== null &&
+      "tools" in error.input &&
+      Array.isArray(error.input.tools)
+    ) {
+      const tool = error.input.tools[toolIndex];
+
+      if (
+        typeof tool === "object" &&
+        tool !== null &&
+        "name" in tool &&
+        typeof tool.name === "string" &&
+        tool.name.length > 0
+      ) {
+        return tool.name;
+      }
+    }
+
+    return undefined;
+  }
+
+  private toStartupErrorMessage(
+    registrationId: string,
+    error: unknown
+  ): string {
+    if (error instanceof McpGatewayError) {
+      return error.message;
+    }
+
+    const registration = this.listRegisteredServers().find(
+      (candidate) => candidate.registrationId === registrationId
+    );
+
+    if (registration) {
+      const schemaError = this.createToolSchemaDiscoveryError(
+        registration,
+        error
+      );
+
+      if (schemaError) {
+        return schemaError.message;
+      }
+    }
+
+    if (this.isStartupTimeoutFailure(error)) {
+      return this.createStartupTimeoutError(registrationId).message;
+    }
+
+    return this.toErrorMessage(error);
+  }
+
+  private isStartupTimeoutFailure(error: unknown): boolean {
+    if (error instanceof McpGatewayError) {
+      return error.code === "MCP_GATEWAY_STARTUP_TIMEOUT";
+    }
+
+    if (isAbortError(error)) {
+      return true;
+    }
+
+    if (error instanceof McpError && error.code === ErrorCode.RequestTimeout) {
+      return true;
+    }
+
+    if (
+      error instanceof McpError &&
+      typeof error.message === "string" &&
+      error.message.includes("AbortError")
+    ) {
+      return true;
+    }
+
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "cause" in error &&
+      this.isStartupTimeoutFailure(error.cause)
+    ) {
+      return true;
+    }
+
+    return (
+      typeof error === "object" &&
+      error !== null &&
+      "message" in error &&
+      typeof error.message === "string" &&
+      error.message.includes("AbortError")
+    );
   }
 
   private toErrorMessage(error: unknown): string {

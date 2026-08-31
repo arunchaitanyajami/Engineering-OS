@@ -451,6 +451,9 @@ export const mcpServerHealthSnapshotSchema = z
     healthState: mcpServerHealthStateSchema,
     discoveryStatus: mcpCapabilityDiscoveryStatusSchema,
     catalog: mcpCatalogSnapshotSchema,
+    processId: z.number().int().positive().optional(),
+    startupDurationMs: z.number().nonnegative().optional(),
+    restartCount: z.number().int().nonnegative().default(0),
     lastError: z.string().min(1).optional()
   })
   .strict();
@@ -458,6 +461,8 @@ export const mcpServerHealthSnapshotSchema = z
 export type McpServerHealthSnapshot = z.infer<
   typeof mcpServerHealthSnapshotSchema
 >;
+
+export const MAX_RUNTIME_MESSAGE_BYTES = 4 * 1024 * 1024;
 
 export interface SecretStore {
   get(namespace: string, key: string): Promise<string | null>;
@@ -581,6 +586,7 @@ export const pluginRuntimeHealthSnapshotSchema = z
     status: pluginRuntimeStatusSchema,
     healthy: z.boolean(),
     processId: z.number().int().positive().optional(),
+    startupDurationMs: z.number().nonnegative().optional(),
     initializedAt: isoTimestampSchema.optional(),
     activatedAt: isoTimestampSchema.optional(),
     restartCount: z.number().int().nonnegative().default(0),
@@ -686,6 +692,208 @@ export type InvokePluginCapabilityRequest = z.infer<
   typeof invokePluginCapabilityRequestSchema
 >;
 export type HealthCheckRequest = z.infer<typeof healthCheckRequestSchema>;
+
+export const readConfigurationResponseSchema = z
+  .object({
+    value: z.unknown().nullable()
+  })
+  .strict();
+
+export type ReadConfigurationResponse = z.infer<
+  typeof readConfigurationResponseSchema
+>;
+
+export const invokePluginCapabilityResponseSchema = z
+  .object({
+    result: jsonObjectSchema
+  })
+  .strict();
+
+export type InvokePluginCapabilityResponse = z.infer<
+  typeof invokePluginCapabilityResponseSchema
+>;
+
+export const pluginRuntimeReadConfigurationRequestSchema = z
+  .object({
+    pluginId: pluginIdSchema,
+    key: keySchema
+  })
+  .strict();
+
+export type PluginRuntimeReadConfigurationRequest = z.infer<
+  typeof pluginRuntimeReadConfigurationRequestSchema
+>;
+
+export const pluginRuntimeInvokeCapabilityRequestSchema = z
+  .object({
+    pluginId: pluginIdSchema,
+    capability: z.string().min(1),
+    payload: jsonObjectSchema.default({})
+  })
+  .strict();
+
+export type PluginRuntimeInvokeCapabilityRequest = z.infer<
+  typeof pluginRuntimeInvokeCapabilityRequestSchema
+>;
+
+export const checkPluginPermissionBrokerRequestSchema = z
+  .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
+    type: z.literal("broker-check-permission"),
+    requestId: z.string().min(1),
+    pluginId: pluginIdSchema,
+    scope: permissionScopeSchema,
+    constraint: jsonObjectSchema.optional(),
+    sessionId: z.string().min(1).optional()
+  })
+  .strict();
+
+export type CheckPluginPermissionBrokerRequest = z.infer<
+  typeof checkPluginPermissionBrokerRequestSchema
+>;
+
+export const requestPluginPermissionBrokerRequestSchema = z
+  .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
+    type: z.literal("broker-request-permission"),
+    requestId: z.string().min(1),
+    pluginId: pluginIdSchema,
+    scope: permissionScopeSchema,
+    reason: z.string().min(10).max(500),
+    constraint: jsonObjectSchema.optional(),
+    sessionId: z.string().min(1).optional()
+  })
+  .strict();
+
+export type RequestPluginPermissionBrokerRequest = z.infer<
+  typeof requestPluginPermissionBrokerRequestSchema
+>;
+
+export const readPluginConfigurationBrokerRequestSchema = z
+  .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
+    type: z.literal("broker-read-configuration"),
+    requestId: z.string().min(1),
+    pluginId: pluginIdSchema,
+    key: keySchema
+  })
+  .strict();
+
+export type ReadPluginConfigurationBrokerRequest = z.infer<
+  typeof readPluginConfigurationBrokerRequestSchema
+>;
+
+export const readPluginConfigurationBrokerResponseSchema = z
+  .object({
+    value: z.unknown().nullable()
+  })
+  .strict();
+
+export type ReadPluginConfigurationBrokerResponse = z.infer<
+  typeof readPluginConfigurationBrokerResponseSchema
+>;
+
+export const readPluginSecretBrokerRequestSchema = z
+  .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
+    type: z.literal("broker-read-secret"),
+    requestId: z.string().min(1),
+    pluginId: pluginIdSchema,
+    key: keySchema
+  })
+  .strict();
+
+export const writePluginSecretBrokerRequestSchema = z
+  .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
+    type: z.literal("broker-write-secret"),
+    requestId: z.string().min(1),
+    pluginId: pluginIdSchema,
+    key: keySchema,
+    value: z.string().min(1)
+  })
+  .strict();
+
+export const deletePluginSecretBrokerRequestSchema = z
+  .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
+    type: z.literal("broker-delete-secret"),
+    requestId: z.string().min(1),
+    pluginId: pluginIdSchema,
+    key: keySchema
+  })
+  .strict();
+
+export const listPluginSecretKeysBrokerRequestSchema = z
+  .object({
+    protocolVersion: pluginRuntimeProtocolVersionSchema,
+    type: z.literal("broker-list-secret-keys"),
+    requestId: z.string().min(1),
+    pluginId: pluginIdSchema
+  })
+  .strict();
+
+export const readPluginSecretBrokerResponseSchema = z
+  .object({
+    value: z.string().nullable()
+  })
+  .strict();
+
+export const listPluginSecretKeysBrokerResponseSchema = z
+  .object({
+    keys: z.array(keySchema)
+  })
+  .strict();
+
+export const secretStoreSetRequestSchema = z
+  .object({
+    namespace: keySchema,
+    key: keySchema,
+    value: z.string().min(1)
+  })
+  .strict();
+
+export const secretStoreDeleteRequestSchema = z
+  .object({
+    namespace: keySchema,
+    key: keySchema
+  })
+  .strict();
+
+export const pluginRuntimeBrokerRequestSchema = z.discriminatedUnion("type", [
+  checkPluginPermissionBrokerRequestSchema,
+  requestPluginPermissionBrokerRequestSchema,
+  readPluginConfigurationBrokerRequestSchema,
+  readPluginSecretBrokerRequestSchema,
+  writePluginSecretBrokerRequestSchema,
+  deletePluginSecretBrokerRequestSchema,
+  listPluginSecretKeysBrokerRequestSchema
+]);
+
+export type PluginRuntimeBrokerRequest = z.infer<
+  typeof pluginRuntimeBrokerRequestSchema
+>;
+
+export const checkPluginPermissionBrokerResponseSchema = z
+  .object({
+    granted: z.boolean()
+  })
+  .strict();
+
+export type CheckPluginPermissionBrokerResponse = z.infer<
+  typeof checkPluginPermissionBrokerResponseSchema
+>;
+
+export const requestPluginPermissionBrokerResponseSchema = z
+  .object({
+    decision: permissionGrantDecisionSchema
+  })
+  .strict();
+
+export type RequestPluginPermissionBrokerResponse = z.infer<
+  typeof requestPluginPermissionBrokerResponseSchema
+>;
+
 export type PluginRuntimeRequest = z.infer<typeof pluginRuntimeRequestSchema>;
 
 export const auditOutcomeSchema = z.enum([
@@ -713,6 +921,149 @@ export const auditEventSchema = z
   .strict();
 
 export type AuditEvent = z.infer<typeof auditEventSchema>;
+
+export const persistedPluginPermissionGrantSchema = permissionGrantSchema
+  .extend({
+    id: z.string().uuid()
+  })
+  .strict();
+
+export type PersistedPluginPermissionGrant = z.infer<
+  typeof persistedPluginPermissionGrantSchema
+>;
+
+export const pluginPermissionRequirementSchema = z
+  .object({
+    scope: permissionScopeSchema,
+    reason: z.string().min(10).max(500),
+    constraint: jsonObjectSchema.optional()
+  })
+  .strict();
+
+export type PluginPermissionRequirement = z.infer<
+  typeof pluginPermissionRequirementSchema
+>;
+
+export const pluginPermissionReviewSnapshotSchema = z
+  .object({
+    pluginId: pluginIdSchema,
+    requirements: z.array(pluginPermissionRequirementSchema),
+    grants: z.array(persistedPluginPermissionGrantSchema),
+    pendingRequirements: z.array(pluginPermissionRequirementSchema),
+    canEnable: z.boolean(),
+    upgradeReviewRequired: z.boolean()
+  })
+  .strict();
+
+export type PluginPermissionReviewSnapshot = z.infer<
+  typeof pluginPermissionReviewSnapshotSchema
+>;
+
+export const pluginPermissionGrantInputSchema = z
+  .object({
+    scope: permissionScopeSchema,
+    decision: permissionGrantDecisionSchema,
+    constraint: jsonObjectSchema.optional()
+  })
+  .strict();
+
+export type PluginPermissionGrantInput = z.infer<
+  typeof pluginPermissionGrantInputSchema
+>;
+
+export const grantPluginPermissionsRequestSchema = z
+  .object({
+    pluginId: pluginIdSchema,
+    sessionId: z.string().min(1).optional(),
+    grants: z.array(pluginPermissionGrantInputSchema).min(1)
+  })
+  .strict();
+
+export type GrantPluginPermissionsRequest = z.infer<
+  typeof grantPluginPermissionsRequestSchema
+>;
+
+export const revokePluginPermissionRequestSchema = z
+  .object({
+    pluginId: pluginIdSchema,
+    scope: permissionScopeSchema
+  })
+  .strict();
+
+export type RevokePluginPermissionRequest = z.infer<
+  typeof revokePluginPermissionRequestSchema
+>;
+
+export const pluginPermissionReviewRequestSchema = z
+  .object({
+    pluginId: pluginIdSchema,
+    sessionId: z.string().min(1).optional()
+  })
+  .strict();
+
+export type PluginPermissionReviewRequest = z.infer<
+  typeof pluginPermissionReviewRequestSchema
+>;
+
+export const toolExecutionApprovalRequirementSchema = z.enum([
+  "none",
+  "user-confirmation",
+  "dual-confirmation"
+]);
+
+export type ToolExecutionApprovalRequirement = z.infer<
+  typeof toolExecutionApprovalRequirementSchema
+>;
+
+export const toolExecutionPolicyEvaluationSchema = z
+  .object({
+    allowed: z.boolean(),
+    requiredApproval: toolExecutionApprovalRequirementSchema,
+    code: z.string().min(1).optional(),
+    message: z.string().min(1).optional()
+  })
+  .strict();
+
+export type ToolExecutionPolicyEvaluation = z.infer<
+  typeof toolExecutionPolicyEvaluationSchema
+>;
+
+export const toolPolicySourceSchema = z.enum(["manual", "inferred"]);
+
+export type ToolPolicySource = z.infer<typeof toolPolicySourceSchema>;
+
+export const persistedToolPolicySchema = z
+  .object({
+    id: z.string().uuid(),
+    toolId: identifierSchema,
+    riskLevel: toolRiskLevelSchema,
+    source: z.literal("manual"),
+    updatedAt: isoTimestampSchema
+  })
+  .strict();
+
+export type PersistedToolPolicy = z.infer<typeof persistedToolPolicySchema>;
+
+export const setToolPolicyRequestSchema = z
+  .object({
+    toolId: identifierSchema,
+    riskLevel: toolRiskLevelSchema
+  })
+  .strict();
+
+export type SetToolPolicyRequest = z.infer<typeof setToolPolicyRequestSchema>;
+
+export const toolPolicyReviewSchema = z
+  .object({
+    toolId: identifierSchema,
+    effectiveRiskLevel: toolRiskLevelSchema,
+    source: toolPolicySourceSchema,
+    inferredRiskLevel: toolRiskLevelSchema,
+    manualPolicy: persistedToolPolicySchema.optional()
+  })
+  .strict();
+
+export type ToolPolicyReview = z.infer<typeof toolPolicyReviewSchema>;
 
 export const REDACTED_VALUE = "[REDACTED]";
 

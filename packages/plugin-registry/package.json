@@ -1,6 +1,6 @@
 {
   "name": "@engineering-os/plugin-registry",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "exports": {
@@ -10,6 +10,7 @@
     "@engineering-os/contracts": "workspace:*",
     "@engineering-os/database": "workspace:*",
     "@engineering-os/logger": "workspace:*",
+    "@engineering-os/observability": "workspace:*",
     "@types/semver": "^7.7.1",
     "semver": "^7.8.5"
   },

@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "1",
+  "id": "com.engineering-os.example",
+  "name": "Example Plugin",
+  "version": "0.1.0",
+  "description": "Reference plugin for Milestone 2 manifest, lifecycle, configuration, secrets, and logging validation.",
+  "publisher": {
+    "name": "Engineering OS"
+  },
+  "engines": {
+    "engineeringOs": ">=0.2.0"
+  },
+  "entrypoints": {
+    "backend": "./dist/backend/index.js"
+  },
+  "capabilities": ["settings"],
+  "permissions": [
+    {
+      "scope": "secrets.read",
+      "reason": "Reads namespaced plugin state from the application secret store."
+    },
+    {
+      "scope": "secrets.write",
+      "reason": "Persists namespaced plugin state in the application secret store."
+    }
+  ],
+  "configuration": {
+    "type": "object",
+    "properties": {
+      "greeting": {
+        "type": "string",
+        "description": "Optional greeting logged during activation."
+      },
+      "simulateFailure": {
+        "type": "boolean",
+        "description": "When true, activation throws to demonstrate failure handling."
+      }
+    },
+    "additionalProperties": false
+  },
+  "mcp": []
+}

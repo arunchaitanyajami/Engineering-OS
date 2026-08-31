@@ -2528,6 +2528,10 @@ export class McpGatewayService {
       return true;
     }
 
+    if (error instanceof McpError && error.code === ErrorCode.RequestTimeout) {
+      return true;
+    }
+
     if (
       error instanceof McpError &&
       typeof error.message === "string" &&

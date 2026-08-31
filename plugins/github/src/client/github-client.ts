@@ -5,10 +5,12 @@ import type {
   Commit,
   FileContent,
   PullRequest,
+  PullRequestComment,
   Repository
 } from "@engineering-os/source-control-domain";
 
 import { mapChangedFile } from "../mappers/changed-file.mapper.js";
+import { mapPullRequestComment } from "../mappers/comment.mapper.js";
 import { mapCommit, mapFileContent } from "../mappers/content.mapper.js";
 import { mapPullRequest } from "../mappers/pull-request.mapper.js";
 import { mapRepository } from "../mappers/repository.mapper.js";
@@ -22,6 +24,7 @@ import {
   listRepositoriesInputSchema,
   type GetCommitInput,
   type GetFileContentInput,
+  type GetPullRequestCommentsInput,
   type GetPullRequestFilesInput,
   type GetPullRequestInput,
   type GitHubClient,
@@ -354,6 +357,30 @@ export const createGitHubClient = (options: {
       });
 
       return mapCommit(result.data) satisfies Commit;
+    },
+
+    async getPullRequestComments(input: GetPullRequestCommentsInput) {
+      const parsed = parseClientInput(
+        getPullRequestInputSchema,
+        input,
+        "get pull request comments"
+      );
+      const repositoryPath = `/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repository)}`;
+
+      const [inlineComments, conversationComments] = await Promise.all([
+        paginate<PullRequestComment>({
+          path: `${repositoryPath}/pulls/${parsed.number}/comments`,
+          notFoundCode: "PULL_REQUEST_NOT_FOUND",
+          mapItem: (payload) => mapPullRequestComment(payload, parsed.number)
+        }),
+        paginate<PullRequestComment>({
+          path: `${repositoryPath}/issues/${parsed.number}/comments`,
+          notFoundCode: "PULL_REQUEST_NOT_FOUND",
+          mapItem: (payload) => mapPullRequestComment(payload, parsed.number)
+        })
+      ]);
+
+      return [...inlineComments, ...conversationComments];
     },
 
     getRateLimit() {

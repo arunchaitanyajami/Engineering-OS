@@ -7,6 +7,7 @@ import {
   fileDiffSchema,
   gitReferenceSchema,
   pluginConnectionSchema,
+  pullRequestCommentSchema,
   pullRequestReviewSchema,
   pullRequestSchema,
   repositorySchema,
@@ -150,6 +151,41 @@ describe("fileContentSchema and commitSchema", () => {
     });
 
     expect(result.success).toBe(false);
+  });
+});
+
+describe("pullRequestCommentSchema", () => {
+  it("accepts an inline comment and rejects GitHub node identifiers", () => {
+    expect(
+      pullRequestCommentSchema.parse({
+        id: "901",
+        kind: "inline",
+        pullRequestNumber: 123,
+        author: { id: "42", username: "ada" },
+        body: "This rounding will undercharge tax.",
+        createdAt: "2026-08-31T09:05:00.000Z",
+        updatedAt: "2026-08-31T09:06:00.000Z",
+        url: "https://github.com/acme/payments/pull/123#discussion_r901",
+        filePath: "src/checkout/totals.ts",
+        line: 48,
+        commitSha: gitSha
+      }).kind
+    ).toBe("inline");
+
+    expect(
+      pullRequestCommentSchema.safeParse({
+        id: "901",
+        kind: "inline",
+        pullRequestNumber: 123,
+        author: { id: "42", username: "ada" },
+        body: "This rounding will undercharge tax.",
+        createdAt: "2026-08-31T09:05:00.000Z",
+        updatedAt: "2026-08-31T09:06:00.000Z",
+        url: "https://github.com/acme/payments/pull/123#discussion_r901",
+        filePath: "src/checkout/totals.ts",
+        node_id: "PRRC_kwDO"
+      }).success
+    ).toBe(false);
   });
 });
 

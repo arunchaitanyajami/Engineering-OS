@@ -45,12 +45,17 @@ export {
 } from "./provider.js";
 export {
   pullRequestAuthorSchema,
+  pullRequestCommentKindSchema,
+  pullRequestCommentKinds,
+  pullRequestCommentSchema,
   pullRequestReferenceSchema,
   pullRequestSchema,
   pullRequestStateSchema,
   pullRequestStates,
   type PullRequest,
   type PullRequestAuthor,
+  type PullRequestComment,
+  type PullRequestCommentKind,
   type PullRequestReference,
   type PullRequestState
 } from "./pull-request.js";

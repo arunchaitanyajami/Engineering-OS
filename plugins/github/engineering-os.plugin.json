@@ -13,7 +13,7 @@
   "entrypoints": {
     "backend": "./dist/backend/index.js"
   },
-  "capabilities": ["settings"],
+  "capabilities": ["mcp-server", "settings"],
   "permissions": [
     {
       "scope": "network.access",
@@ -27,7 +27,28 @@
     {
       "scope": "secrets.write",
       "reason": "Stores workspace-scoped GitHub credentials in the local secret store instead of SQLite."
+    },
+    {
+      "scope": "process.spawn",
+      "reason": "Starts the bundled GitHub MCP server process for repository and pull request tools."
+    },
+    {
+      "scope": "mcp.register-server",
+      "reason": "Registers the plugin-owned GitHub MCP server with the application gateway."
+    },
+    {
+      "scope": "tool.execute",
+      "reason": "Executes GitHub read tools through the MCP gateway after permission checks."
     }
   ],
-  "mcp": []
+  "mcp": [
+    {
+      "id": "github",
+      "name": "GitHub",
+      "transport": "stdio",
+      "command": "node",
+      "args": ["./dist/mcp/server.js"],
+      "timeoutMs": 30000
+    }
+  ]
 }

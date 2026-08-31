@@ -114,3 +114,19 @@ export type GitHubFileContentPayload = z.infer<
   typeof githubFileContentPayloadSchema
 >;
 export type GitHubCommitPayload = z.infer<typeof githubCommitPayloadSchema>;
+
+export const githubCommentPayloadSchema = z
+  .object({
+    id: z.union([z.number(), z.string()]),
+    user: githubUserPayloadSchema.nullable().optional(),
+    body: z.string(),
+    created_at: z.string().min(1),
+    updated_at: z.string().min(1),
+    html_url: z.string().url(),
+    path: z.string().min(1).optional(),
+    line: z.number().int().positive().nullable().optional(),
+    commit_id: z.string().min(1).optional()
+  })
+  .passthrough();
+
+export type GitHubCommentPayload = z.infer<typeof githubCommentPayloadSchema>;

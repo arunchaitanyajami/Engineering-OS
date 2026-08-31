@@ -18,12 +18,20 @@ export {
 export type {
   GetCommitInput,
   GetFileContentInput,
+  GetPullRequestCommentsInput,
   GetPullRequestFilesInput,
   GetPullRequestInput,
   GitHubClient,
   ListPullRequestsInput,
   ListRepositoriesInput
 } from "./client/github-client.types.js";
+export { githubMcpTools } from "./tools/catalog.js";
+export { executeGitHubTool } from "./tools/execute-tool.js";
+export {
+  createGitHubMcpRequestHandler,
+  listGitHubMcpToolDescriptors
+} from "./mcp/handler.js";
+export type { GitHubToolExecutionContext } from "./tools/tool.js";
 export {
   GitHubPluginError,
   githubErrorCodes,

@@ -7,6 +7,7 @@ import {
   isoTimestampSchema,
   nonNegativeIntSchema,
   positiveIntSchema,
+  sourceControlPathSchema,
   trimmedTextSchema
 } from "./primitives.js";
 import { sourceControlProviderSchema } from "./provider.js";
@@ -61,3 +62,29 @@ export const pullRequestSchema = z
   .strict();
 
 export type PullRequest = z.infer<typeof pullRequestSchema>;
+
+export const pullRequestCommentKinds = ["conversation", "inline"] as const;
+
+export const pullRequestCommentKindSchema = z.enum(pullRequestCommentKinds);
+
+export type PullRequestCommentKind = z.infer<
+  typeof pullRequestCommentKindSchema
+>;
+
+export const pullRequestCommentSchema = z
+  .object({
+    id: trimmedTextSchema(128),
+    kind: pullRequestCommentKindSchema,
+    pullRequestNumber: positiveIntSchema,
+    author: pullRequestAuthorSchema,
+    body: z.string().max(65_536),
+    createdAt: isoTimestampSchema,
+    updatedAt: isoTimestampSchema,
+    url: httpUrlSchema,
+    filePath: sourceControlPathSchema.optional(),
+    line: z.number().int().positive().optional(),
+    commitSha: gitShaSchema.optional()
+  })
+  .strict();
+
+export type PullRequestComment = z.infer<typeof pullRequestCommentSchema>;

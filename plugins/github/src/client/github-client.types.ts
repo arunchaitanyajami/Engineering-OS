@@ -3,6 +3,7 @@ import type {
   Commit,
   FileContent,
   PullRequest,
+  PullRequestComment,
   Repository
 } from "@engineering-os/source-control-domain";
 import { z } from "zod";
@@ -61,6 +62,8 @@ export const getCommitInputSchema = z
 
 export type GetCommitInput = z.infer<typeof getCommitInputSchema>;
 
+export type GetPullRequestCommentsInput = GetPullRequestInput;
+
 export interface GitHubClient {
   listRepositories(input?: ListRepositoriesInput): Promise<Repository[]>;
   listPullRequests(input: ListPullRequestsInput): Promise<PullRequest[]>;
@@ -68,5 +71,8 @@ export interface GitHubClient {
   getPullRequestFiles(input: GetPullRequestFilesInput): Promise<ChangedFile[]>;
   getFileContent(input: GetFileContentInput): Promise<FileContent>;
   getCommit(input: GetCommitInput): Promise<Commit>;
+  getPullRequestComments(
+    input: GetPullRequestCommentsInput
+  ): Promise<PullRequestComment[]>;
   getRateLimit(): GitHubRateLimit | null;
 }

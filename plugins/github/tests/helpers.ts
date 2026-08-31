@@ -72,6 +72,33 @@ export const githubCommitPayload = {
   parents: [{ sha: headSha }]
 };
 
+export const githubInlineCommentPayload = {
+  id: 901,
+  user: {
+    id: 42,
+    login: "ada",
+    avatar_url: "https://avatars.githubusercontent.com/u/42"
+  },
+  body: "This rounding will undercharge tax.",
+  created_at: "2026-08-31T09:05:00Z",
+  updated_at: "2026-08-31T09:06:00Z",
+  html_url: "https://github.com/acme/payments/pull/123#discussion_r901",
+  path: "src/checkout/totals.ts",
+  line: 48,
+  commit_id: gitSha,
+  node_id: "PRRC_kwDO"
+};
+
+export const githubConversationCommentPayload = {
+  id: 902,
+  user: { id: 7, login: "grace" },
+  body: "Please add a regression test.",
+  created_at: "2026-08-31T09:07:00Z",
+  updated_at: "2026-08-31T09:07:00Z",
+  html_url: "https://github.com/acme/payments/pull/123#issuecomment-902",
+  node_id: "IC_kwDO"
+};
+
 export const jsonResponse = (
   body: unknown,
   init: { status?: number; headers?: Record<string, string> } = {}

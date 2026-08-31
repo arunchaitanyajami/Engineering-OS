@@ -21,6 +21,8 @@ describe("GitHub plugin contract", () => {
         (permission) => permission.scope === "network.access"
       )
     ).toBe(true);
-    expect(manifest.mcp).toEqual([]);
+    expect(manifest.mcp).toHaveLength(1);
+    expect(manifest.mcp[0]?.id).toBe("github");
+    expect(manifest.capabilities).toContain("mcp-server");
   });
 });

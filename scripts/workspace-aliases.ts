@@ -36,6 +36,7 @@ const workspaceAliasEntries = [
     "@engineering-os/source-control-domain",
     "../packages/source-control-domain/src/index.ts"
   ],
+  ["@engineering-os/pr-reviewer", "../agents/pr-reviewer/src/index.ts"],
   ["@engineering-os/github-plugin", "../plugins/github/src/index.ts"]
 ] as const;
 

@@ -1,0 +1,4 @@
+@@ -1,3 +0,0 @@
+-export const removed = true;
+-export const stale = true;
+-export const value = 1;

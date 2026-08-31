@@ -14,6 +14,7 @@ import {
   type EngineeringWorkspace,
   type GitHubConnectionRecord,
   type GitHubPullRequest,
+  type GitHubPullRequestDiffSet,
   type GitHubRepository
 } from "../../services/desktop-backend-client.js";
 import { isDesktopBackendAvailable } from "../../services/desktop-backend-request.js";
@@ -166,6 +167,33 @@ export function GitHubBrowserScreen() {
   );
   const selectedPullRequest =
     selectedPullRequestResource.data?.pullRequest ?? listedPullRequest;
+
+  const loadDiffSet = useCallback(async () => {
+    if (
+      !activeWorkspaceId ||
+      !activeConnectionId ||
+      !activeRepository ||
+      !Number.isInteger(selectedNumber) ||
+      selectedNumber <= 0
+    ) {
+      return { diffSet: null as GitHubPullRequestDiffSet | null };
+    }
+
+    return desktopBackendClient.getGitHubPullRequestFiles({
+      workspaceId: activeWorkspaceId,
+      connectionId: activeConnectionId,
+      owner: activeRepository.owner,
+      repository: activeRepository.name,
+      pullRequestNumber: selectedNumber
+    });
+  }, [activeConnectionId, activeRepository, activeWorkspaceId, selectedNumber]);
+
+  const diffSetResource = useAsyncResource(loadDiffSet, [
+    activeConnectionId,
+    activeRepository?.fullName,
+    activeWorkspaceId,
+    selectedNumber
+  ]);
 
   const updateBrowseParams = (
     next: Record<string, string | undefined>
@@ -382,6 +410,28 @@ export function GitHubBrowserScreen() {
             />
           )}
         </PanelCard>
+
+        <PanelCard eyebrow="Diff" title="Changed files">
+          {!selectedPullRequest ? (
+            <EmptyState
+              title="Select a pull request"
+              description="Changed files are retrieved through MCP and parsed deterministically."
+            />
+          ) : diffSetResource.isLoading ? (
+            <p className="ui-muted">
+              Loading changed files and parsed diffs through MCP.
+            </p>
+          ) : diffSetResource.error ? (
+            <p className="ui-error-text">{diffSetResource.error}</p>
+          ) : diffSetResource.data?.diffSet ? (
+            <ChangedFilesList diffSet={diffSetResource.data.diffSet} />
+          ) : (
+            <EmptyState
+              title="No changed files"
+              description="This pull request did not return a parsed diff set."
+            />
+          )}
+        </PanelCard>
       </div>
     </div>
   );
@@ -530,6 +580,78 @@ function PullRequestMetadataCard({
           Open on GitHub
         </a>
       </div>
+    </div>
+  );
+}
+
+function mappedLineRange(
+  diff: GitHubPullRequestDiffSet["diffs"][number]
+): string {
+  const numbers = diff.hunks.flatMap((hunk) =>
+    hunk.lines.flatMap((line) =>
+      diff.status === "deleted"
+        ? line.oldLineNumber
+          ? [line.oldLineNumber]
+          : []
+        : line.newLineNumber
+          ? [line.newLineNumber]
+          : []
+    )
+  );
+
+  if (numbers.length === 0) {
+    return diff.binary ? "binary" : "no mapped lines";
+  }
+
+  return `${Math.min(...numbers)}–${Math.max(...numbers)}`;
+}
+
+function ChangedFilesList({
+  diffSet
+}: {
+  readonly diffSet: GitHubPullRequestDiffSet;
+}) {
+  if (diffSet.decisions.length === 0) {
+    return (
+      <EmptyState
+        title="No changed files"
+        description="MCP returned an empty changed-file list."
+      />
+    );
+  }
+
+  return (
+    <div className="stack-list">
+      {diffSet.decisions.map((result) => {
+        const diff = diffSet.diffs.find(
+          (candidate) => candidate.path === result.file.path
+        );
+
+        return (
+          <div className="list-note" key={result.file.path}>
+            <div className="list-link-card__header">
+              <strong>{result.file.path}</strong>
+              <Badge tone={result.decision.include ? "success" : "neutral"}>
+                {result.decision.include
+                  ? "Review"
+                  : (result.decision.reason ?? "Skipped")}
+              </Badge>
+            </div>
+            <span className="ui-muted">
+              {result.file.status}
+              {result.file.previousPath
+                ? ` · renamed from ${result.file.previousPath}`
+                : ""}
+              {` · +${result.file.additions} / -${result.file.deletions}`}
+            </span>
+            <span className="ui-muted">
+              {diff
+                ? `${diff.hunks.length} hunks · mapped lines ${mappedLineRange(diff)}`
+                : "Diff not parsed"}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }

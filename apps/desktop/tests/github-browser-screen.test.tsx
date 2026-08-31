@@ -23,6 +23,7 @@ const listGitHubConnections = vi.fn();
 const listGitHubRepositories = vi.fn();
 const listGitHubPullRequests = vi.fn();
 const getGitHubPullRequest = vi.fn();
+const getGitHubPullRequestFiles = vi.fn();
 const executeMcpTool = vi.fn();
 
 vi.mock("../src/services/desktop-backend-request.js", () => ({
@@ -39,6 +40,8 @@ vi.mock("../src/services/desktop-backend-client.js", () => ({
     listGitHubPullRequests: (...args: unknown[]) =>
       listGitHubPullRequests(...args),
     getGitHubPullRequest: (...args: unknown[]) => getGitHubPullRequest(...args),
+    getGitHubPullRequestFiles: (...args: unknown[]) =>
+      getGitHubPullRequestFiles(...args),
     executeMcpTool: (...args: unknown[]) => executeMcpTool(...args)
   }
 }));
@@ -134,6 +137,80 @@ describe("GitHub browser UI", () => {
     getGitHubPullRequest.mockResolvedValue({
       pullRequest: samplePullRequest
     });
+    getGitHubPullRequestFiles.mockResolvedValue({
+      diffSet: {
+        files: [
+          {
+            path: "src/auth.ts",
+            status: "modified",
+            additions: 1,
+            deletions: 0,
+            binary: false
+          },
+          {
+            path: "pnpm-lock.yaml",
+            status: "modified",
+            additions: 10,
+            deletions: 2,
+            binary: false
+          }
+        ],
+        diffs: [
+          {
+            path: "src/auth.ts",
+            status: "modified",
+            binary: false,
+            additions: 1,
+            deletions: 0,
+            hunks: [
+              {
+                oldStart: 1,
+                oldLineCount: 2,
+                newStart: 1,
+                newLineCount: 3,
+                lines: [
+                  {
+                    kind: "addition",
+                    content: "export const tax = 1;",
+                    newLineNumber: 2
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            path: "pnpm-lock.yaml",
+            status: "modified",
+            binary: false,
+            additions: 10,
+            deletions: 2,
+            hunks: []
+          }
+        ],
+        decisions: [
+          {
+            file: {
+              path: "src/auth.ts",
+              status: "modified",
+              additions: 1,
+              deletions: 0,
+              binary: false
+            },
+            decision: { include: true }
+          },
+          {
+            file: {
+              path: "pnpm-lock.yaml",
+              status: "modified",
+              additions: 10,
+              deletions: 2,
+              binary: false
+            },
+            decision: { include: false, reason: "lockfile" }
+          }
+        ]
+      }
+    });
   });
 
   it("navigates connection to repository to pull request through backend browse APIs", async () => {
@@ -183,6 +260,18 @@ describe("GitHub browser UI", () => {
         pullRequestNumber: 12
       });
     });
+    expect(await screen.findByText("src/auth.ts")).toBeInTheDocument();
+    expect(screen.getByText("Review")).toBeInTheDocument();
+    expect(screen.getByText("pnpm-lock.yaml")).toBeInTheDocument();
+    expect(screen.getByText("lockfile")).toBeInTheDocument();
+    expect(screen.getByText(/mapped lines 2–2/)).toBeInTheDocument();
+    expect(getGitHubPullRequestFiles).toHaveBeenCalledWith({
+      workspaceId: "workspace-a",
+      connectionId: "connection-1",
+      owner: "acme",
+      repository: "widgets",
+      pullRequestNumber: 12
+    });
     expect(executeMcpTool).not.toHaveBeenCalled();
   });
 
@@ -194,7 +283,9 @@ describe("GitHub browser UI", () => {
     );
 
     expect(await screen.findByText("acme/widgets")).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: /Company A GitHub/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /Company A GitHub/ })
+    ).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Workspace"), {
       target: { value: "workspace-b" }

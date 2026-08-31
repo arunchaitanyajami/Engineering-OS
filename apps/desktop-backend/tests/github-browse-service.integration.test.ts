@@ -4,6 +4,7 @@ import type { ToolDescriptor } from "@engineering-os/contracts/unstable-runtime"
 import { githubPluginId } from "@engineering-os/github-plugin";
 import type { InstalledPlugin } from "@engineering-os/plugin-registry";
 import type {
+  ChangedFile,
   PullRequest,
   Repository
 } from "@engineering-os/source-control-domain";
@@ -78,6 +79,17 @@ const samplePullRequest: PullRequest = {
   url: "https://github.com/acme/widgets/pull/12"
 };
 
+const sampleChangedFile: ChangedFile = {
+  path: "src/auth.ts",
+  status: "modified",
+  additions: 1,
+  deletions: 0,
+  binary: false,
+  language: "TypeScript",
+  patch:
+    "@@ -1,2 +1,3 @@\n export const ok = true;\n+export const tax = 1;\n export const ready = true;\n"
+};
+
 const listRepositoriesTool: ToolDescriptor = {
   id: "com.engineering-os.github.github.tool.github.list_repositories",
   serverId: "github",
@@ -104,6 +116,12 @@ const getPullRequestTool: ToolDescriptor = {
   ...listRepositoriesTool,
   id: "com.engineering-os.github.github.tool.github.get_pull_request",
   name: "github.get_pull_request"
+};
+
+const getPullRequestFilesTool: ToolDescriptor = {
+  ...listRepositoriesTool,
+  id: "com.engineering-os.github.github.tool.github.get_pull_request_files",
+  name: "github.get_pull_request_files"
 };
 
 const enabledPlugin = {
@@ -136,6 +154,14 @@ describe("GitHub browse service", () => {
           status: "success" as const,
           content: [],
           metadata: { structuredContent: [samplePullRequest] }
+        };
+      }
+
+      if (request.toolId === getPullRequestFilesTool.id) {
+        return {
+          status: "success" as const,
+          content: [],
+          metadata: { structuredContent: [sampleChangedFile] }
         };
       }
 
@@ -195,7 +221,8 @@ describe("GitHub browse service", () => {
         listTools: () => [
           listRepositoriesTool,
           listPullRequestsTool,
-          getPullRequestTool
+          getPullRequestTool,
+          getPullRequestFilesTool
         ],
         executeTool: executeTool as never
       },
@@ -313,6 +340,57 @@ describe("GitHub browse service", () => {
         pullRequestNumber: 12
       }
     });
+  });
+
+  it("retrieves changed files through MCP and parses mapped diff lines", async () => {
+    const { executeTool, service } = createService();
+    const diffSet = await service.getPullRequestFiles({
+      workspaceId: "workspace-a",
+      connectionId: "connection-1",
+      owner: "acme",
+      repository: "widgets",
+      pullRequestNumber: 12
+    });
+
+    expect(executeTool.mock.calls[0]?.[0]).toMatchObject({
+      toolId: getPullRequestFilesTool.id,
+      arguments: {
+        connectionId: "connection-1",
+        owner: "acme",
+        repository: "widgets",
+        pullRequestNumber: 12
+      }
+    });
+    expect(diffSet.files[0]?.path).toBe("src/auth.ts");
+    expect(diffSet.diffs[0]?.hunks[0]?.lines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "addition",
+          content: "export const tax = 1;",
+          newLineNumber: 2
+        })
+      ])
+    );
+    expect(diffSet.decisions[0]?.decision).toEqual({ include: true });
+  });
+
+  it("does not retrieve files for another workspace connection", async () => {
+    const { executeTool, service } = createService({
+      connections: [companyConnection, personalConnection]
+    });
+
+    await expect(
+      service.getPullRequestFiles({
+        workspaceId: "workspace-b",
+        connectionId: "connection-1",
+        owner: "acme",
+        repository: "widgets",
+        pullRequestNumber: 12
+      })
+    ).rejects.toMatchObject({
+      code: "GITHUB_CONNECTION_NOT_FOUND"
+    });
+    expect(executeTool).not.toHaveBeenCalled();
   });
 
   it("does not browse when the GitHub connection is disconnected", async () => {

@@ -1,0 +1,10 @@
+@@ -1,2 +1,3 @@ header
+ const first = 1;
++const addedFirst = 2;
+ const second = 3;
+@@ -20,4 +21,5 @@ later
+ const later = 20;
+ const keep = 21;
++const addedLater = 22;
+ const last = 23;
+ const end = 24;

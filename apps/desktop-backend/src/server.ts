@@ -86,6 +86,7 @@ import { z } from "zod";
 import {
   GitHubBrowseService,
   getGitHubPullRequestRequestSchema,
+  getGitHubPullRequestFilesRequestSchema,
   listGitHubPullRequestsRequestSchema,
   listGitHubRepositoriesRequestSchema
 } from "./github-browse-service.js";
@@ -1751,6 +1752,32 @@ export const createDesktopBackendHandler =
 
         writeJson(response, {
           pullRequest: await context.githubBrowseService.getPullRequest(
+            browseRequest,
+            requestAbortSignal
+          )
+        });
+        return;
+      }
+
+      if (
+        request.method === "GET" &&
+        requestUrl.pathname === "/github/pull-request/files"
+      ) {
+        const browseRequest = readGitHubBrowseQuery(
+          requestUrl.searchParams,
+          getGitHubPullRequestFilesRequestSchema,
+          [
+            "workspaceId",
+            "connectionId",
+            "owner",
+            "repository",
+            "pullRequestNumber"
+          ]
+        );
+        const requestAbortSignal = createRequestAbortSignal(request, response);
+
+        writeJson(response, {
+          diffSet: await context.githubBrowseService.getPullRequestFiles(
             browseRequest,
             requestAbortSignal
           )

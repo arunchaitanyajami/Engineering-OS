@@ -36,6 +36,7 @@ plugins/
 
 agents/
   README.md
+  pr-reviewer/
 
 workflows/
   README.md
@@ -52,6 +53,7 @@ docs/
 - `packages/core` may depend on contracts and platform services.
 - Connector plugins may depend only on `packages/plugin-sdk`, `packages/contracts`, and `packages/source-control-domain`.
 - Plugins must not depend on desktop UI internals, database implementation packages, other plugin source trees, AI provider implementations, or SCM SDK types outside the owning plugin.
+- Agents must not import apps or plugins. GitHub REST knowledge stays in `plugins/github/`.
 - `apps/*` must not import `packages/database` or `packages/security` directly into UI code.
 
 ## Enforcement

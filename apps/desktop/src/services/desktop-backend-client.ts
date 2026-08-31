@@ -109,6 +109,63 @@ export interface GitHubPullRequest {
   readonly url: string;
 }
 
+export interface GitHubChangedFile {
+  readonly path: string;
+  readonly previousPath?: string;
+  readonly status: "added" | "modified" | "deleted" | "renamed";
+  readonly additions: number;
+  readonly deletions: number;
+  readonly binary: boolean;
+  readonly language?: string;
+}
+
+export interface GitHubFileDiffHunk {
+  readonly oldStart: number;
+  readonly oldLineCount: number;
+  readonly newStart: number;
+  readonly newLineCount: number;
+  readonly sectionHeading?: string;
+  readonly lines: readonly {
+    readonly kind: "context" | "addition" | "deletion";
+    readonly content: string;
+    readonly oldLineNumber?: number;
+    readonly newLineNumber?: number;
+    readonly noNewlineAtEnd?: boolean;
+  }[];
+}
+
+export interface GitHubFileDiff {
+  readonly path: string;
+  readonly previousPath?: string;
+  readonly status: GitHubChangedFile["status"];
+  readonly binary: boolean;
+  readonly additions: number;
+  readonly deletions: number;
+  readonly hunks: readonly GitHubFileDiffHunk[];
+}
+
+export interface GitHubFileReviewDecision {
+  readonly include: boolean;
+  readonly reason?:
+    | "binary"
+    | "generated-file"
+    | "lockfile"
+    | "vendored"
+    | "minified"
+    | "snapshot"
+    | "budget"
+    | "unsupported";
+}
+
+export interface GitHubPullRequestDiffSet {
+  readonly files: readonly GitHubChangedFile[];
+  readonly diffs: readonly GitHubFileDiff[];
+  readonly decisions: readonly {
+    readonly file: GitHubChangedFile;
+    readonly decision: GitHubFileReviewDecision;
+  }[];
+}
+
 export interface InspectedPluginPackage {
   readonly source: PluginInstallation["source"];
   readonly manifestPath: string;
@@ -477,6 +534,24 @@ export class DesktopBackendClient {
   }): Promise<{ readonly pullRequest: GitHubPullRequest }> {
     return requestDesktopBackend(
       `/github/pull-request${buildQuery({
+        workspaceId: request.workspaceId,
+        connectionId: request.connectionId,
+        owner: request.owner,
+        repository: request.repository,
+        pullRequestNumber: String(request.pullRequestNumber)
+      })}`
+    );
+  }
+
+  getGitHubPullRequestFiles(request: {
+    readonly workspaceId: string;
+    readonly connectionId: string;
+    readonly owner: string;
+    readonly repository: string;
+    readonly pullRequestNumber: number;
+  }): Promise<{ readonly diffSet: GitHubPullRequestDiffSet }> {
+    return requestDesktopBackend(
+      `/github/pull-request/files${buildQuery({
         workspaceId: request.workspaceId,
         connectionId: request.connectionId,
         owner: request.owner,

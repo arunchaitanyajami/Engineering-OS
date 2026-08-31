@@ -14,7 +14,9 @@ import {
 import { McpGatewayError } from "@engineering-os/mcp-gateway";
 import type { PermissionEngineService } from "@engineering-os/permission-engine";
 import type { PluginRegistryService } from "@engineering-os/plugin-registry";
+import { buildPullRequestDiffSet } from "@engineering-os/pr-reviewer";
 import {
+  changedFileSchema,
   pullRequestSchema,
   repositorySchema,
   type PullRequest,
@@ -66,6 +68,11 @@ export type GetGitHubPullRequestRequest = z.infer<
   typeof getGitHubPullRequestRequestSchema
 >;
 
+export const getGitHubPullRequestFilesRequestSchema =
+  getGitHubPullRequestRequestSchema;
+
+export type GetGitHubPullRequestFilesRequest = GetGitHubPullRequestRequest;
+
 export interface GitHubBrowseServiceOptions {
   readonly connections: Pick<GitHubConnectionService, "getConnection">;
   readonly pluginRegistry: Pick<PluginRegistryService, "getInstalledPlugin">;
@@ -104,7 +111,8 @@ export interface GitHubBrowseServiceOptions {
 const githubBrowseTools = {
   listRepositories: "github.list_repositories",
   listPullRequests: "github.list_pull_requests",
-  getPullRequest: "github.get_pull_request"
+  getPullRequest: "github.get_pull_request",
+  getPullRequestFiles: "github.get_pull_request_files"
 } as const;
 
 const toPluginConnectionError = (error: unknown): PluginConnectionError => {
@@ -221,6 +229,27 @@ export class GitHubBrowseService {
       outputSchema: pullRequestSchema,
       ...(signal ? { signal } : {})
     });
+  }
+
+  async getPullRequestFiles(
+    request: GetGitHubPullRequestFilesRequest,
+    signal?: AbortSignal
+  ) {
+    const parsed = getGitHubPullRequestFilesRequestSchema.parse(request);
+    const files = await this.executeReadTool({
+      request: parsed,
+      toolName: githubBrowseTools.getPullRequestFiles,
+      arguments: {
+        connectionId: parsed.connectionId,
+        owner: parsed.owner,
+        repository: parsed.repository,
+        pullRequestNumber: parsed.pullRequestNumber
+      },
+      outputSchema: z.array(changedFileSchema),
+      ...(signal ? { signal } : {})
+    });
+
+    return buildPullRequestDiffSet(files);
   }
 
   private async executeReadTool<T>(input: {

@@ -73,6 +73,12 @@ importers:
         specifier: ^3.24.1
         version: 3.25.76
 
+  agents/pr-reviewer:
+    dependencies:
+      '@engineering-os/source-control-domain':
+        specifier: workspace:*
+        version: link:../../packages/source-control-domain
+
   apps/cli: {}
 
   apps/desktop:
@@ -150,6 +156,9 @@ importers:
       '@engineering-os/plugin-runtime':
         specifier: workspace:*
         version: link:../../packages/plugin-runtime
+      '@engineering-os/pr-reviewer':
+        specifier: workspace:*
+        version: link:../../agents/pr-reviewer
       '@engineering-os/security':
         specifier: workspace:*
         version: link:../../packages/security

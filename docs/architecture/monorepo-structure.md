@@ -12,6 +12,7 @@ apps/
         plugins/
         mcp/
         permissions/
+        github-connection/
 
 packages/
   core/

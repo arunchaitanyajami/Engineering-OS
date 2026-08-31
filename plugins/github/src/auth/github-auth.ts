@@ -29,6 +29,12 @@ export interface GitHubResolvedAuth {
   readonly token: string;
 }
 
+export const githubPatSecretKey = (input: {
+  readonly workspaceId: string;
+  readonly connectionId: string;
+}): string =>
+  `workspace.${input.workspaceId}.connection.${input.connectionId}.pat`;
+
 export const secretKeyForAuthMethod = (method: GitHubAuthMethod): string => {
   switch (method.type) {
     case "personal-access-token":

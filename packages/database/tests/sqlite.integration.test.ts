@@ -37,7 +37,7 @@ describe("ApplicationDatabase", () => {
     expect(database.listSessions()).toHaveLength(1);
     expect(database.getHealth()).toMatchObject({
       ok: true,
-      migrationVersion: 8
+      migrationVersion: 9
     });
   });
 
@@ -58,6 +58,9 @@ describe("ApplicationDatabase", () => {
         "tool_policies",
         "audit_events"
       ])
+    );
+    expect(database.queryTableNames()).toEqual(
+      expect.arrayContaining(["engineering_workspaces", "plugin_connections"])
     );
 
     const timestamp = "2026-08-22T00:00:00.000Z";

@@ -334,6 +334,45 @@ export const applicationMigrations: readonly SqlMigration[] = [
       CREATE INDEX IF NOT EXISTS idx_execution_audit_plugin_id
         ON execution_audit(plugin_id);
     `
+  },
+  {
+    version: 9,
+    name: "workspaces_and_plugin_connections",
+    sql: `
+      CREATE TABLE IF NOT EXISTS engineering_workspaces (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_engineering_workspaces_updated_at
+        ON engineering_workspaces(updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS plugin_connections (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        plugin_id TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        credential_ref TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (
+          status IN ('connected', 'disconnected', 'expired', 'error')
+        ),
+        auth_method_json TEXT NOT NULL,
+        account_login TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (workspace_id) REFERENCES engineering_workspaces(id) ON DELETE CASCADE,
+        FOREIGN KEY (plugin_id) REFERENCES installed_plugins(plugin_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_plugin_connections_workspace_plugin
+        ON plugin_connections(workspace_id, plugin_id);
+
+      CREATE INDEX IF NOT EXISTS idx_plugin_connections_updated_at
+        ON plugin_connections(updated_at DESC);
+    `
   }
 ];
 

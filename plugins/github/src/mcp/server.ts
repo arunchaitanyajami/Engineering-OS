@@ -1,3 +1,4 @@
+import { githubPatSecretKey } from "../auth/github-auth.js";
 import { createGitHubClientFactory } from "../client/github-client-factory.js";
 import {
   githubPluginCapabilities,
@@ -87,7 +88,10 @@ const start = async () => {
           status: "connected",
           authMethod: {
             type: "personal-access-token",
-            tokenRef: `connection.${input.connectionId}.pat`
+            tokenRef: githubPatSecretKey({
+              workspaceId: input.workspaceId,
+              connectionId: input.connectionId
+            })
           }
         };
       }

@@ -6,7 +6,7 @@ GitHub REST knowledge stays in this package. Application services, agents, and
 the desktop UI must consume normalized `@engineering-os/source-control-domain`
 types through the MCP gateway once those tools land.
 
-## Current scope (M3.3)
+## Current scope (M3.4)
 
 - personal access token authentication, with OAuth and GitHub App method shapes reserved
 - credential resolution through plugin secret references (never raw tokens in SQLite)
@@ -14,8 +14,9 @@ types through the MCP gateway once those tools land.
 - typed errors, pagination, and rate-limit metadata
 - mapping from GitHub REST payloads onto domain contracts
 - read-only MCP tools with workspace and connection isolation
+- workspace-scoped connection records and desktop connection UI
 
-Publishing and connection UI are later Milestone 3 phases.
+Publishing remains a later Milestone 3 phase.
 
 ## MCP tools
 
@@ -39,13 +40,34 @@ Publishing and connection UI are later Milestone 3 phases.
 ## Secrets
 
 SQLite and connection records may store a `credentialRef`. The actual token is
-read from `context.secrets` using that reference.
+read from `context.secrets` using that reference. Personal access tokens use a
+workspace-scoped key:
+
+`workspace.{workspaceId}.connection.{connectionId}.pat`
 
 Do not log credentials. Do not return credentials from client methods.
 
 ## Local registration
 
-Workspace TypeScript path aliases resolve `@engineering-os/contracts`,
-`@engineering-os/plugin-sdk`, and `@engineering-os/source-control-domain`.
-This package does not declare those as `package.json` dependencies so a
-local desktop install is not blocked by `node_modules` symbolic links.
+This package is independently installable. The desktop registry loads JavaScript
+entrypoints, not TypeScript:
+
+- `dist/backend/index.js` — plugin lifecycle hooks
+- `dist/mcp/server.js` — stdio MCP server started by the gateway
+
+From this directory:
+
+```bash
+npm run build
+```
+
+That writes `dist/`. Do not run `npm install` / `pnpm install` inside this
+folder. Workspace packages are bundled into `dist/mcp/server.js` so the
+installed plugin does not need `node_modules`. The registry rejects plugin
+packages that contain `node_modules` symbolic links.
+
+`npm run typecheck` only type-checks (`tsc --noEmit`). It does not create
+`dist/`.
+
+After a successful build, register this directory from the desktop Plugins
+screen.

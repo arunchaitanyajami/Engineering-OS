@@ -1,3 +1,7 @@
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import { pluginManifestSchema } from "@engineering-os/contracts";
@@ -24,5 +28,12 @@ describe("GitHub plugin contract", () => {
     expect(manifest.mcp).toHaveLength(1);
     expect(manifest.mcp[0]?.id).toBe("github");
     expect(manifest.capabilities).toContain("mcp-server");
+  });
+
+  it("ships the backend and MCP entrypoints required for local registration", () => {
+    const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+    expect(existsSync(join(packageRoot, "dist/backend/index.js"))).toBe(true);
+    expect(existsSync(join(packageRoot, "dist/mcp/server.js"))).toBe(true);
   });
 });

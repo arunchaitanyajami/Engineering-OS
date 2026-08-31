@@ -1,5 +1,7 @@
 node_modules
 dist
+!plugins/*/dist/
+!plugins/*/dist/**
 coverage
 .DS_Store
 *.log

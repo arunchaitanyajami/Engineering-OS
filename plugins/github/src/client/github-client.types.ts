@@ -64,6 +64,10 @@ export type GetCommitInput = z.infer<typeof getCommitInputSchema>;
 
 export type GetPullRequestCommentsInput = GetPullRequestInput;
 
+export interface GitHubAuthenticatedAccount {
+  readonly login: string;
+}
+
 export interface GitHubClient {
   listRepositories(input?: ListRepositoriesInput): Promise<Repository[]>;
   listPullRequests(input: ListPullRequestsInput): Promise<PullRequest[]>;
@@ -74,5 +78,6 @@ export interface GitHubClient {
   getPullRequestComments(
     input: GetPullRequestCommentsInput
   ): Promise<PullRequestComment[]>;
+  verifyAuthentication(): Promise<GitHubAuthenticatedAccount>;
   getRateLimit(): GitHubRateLimit | null;
 }

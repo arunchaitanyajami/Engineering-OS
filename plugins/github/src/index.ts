@@ -4,10 +4,12 @@ export {
 } from "./auth/credential-resolver.js";
 export {
   githubAuthMethodSchema,
+  githubPatSecretKey,
   type GitHubAuthMethod,
   type GitHubResolvedAuth
 } from "./auth/github-auth.js";
 export { createGitHubClient } from "./client/github-client.js";
+export type { GitHubClientDependencies } from "./client/github-client.js";
 export {
   createGitHubClientFactory,
   type CreateGitHubClientInput,
@@ -21,6 +23,7 @@ export type {
   GetPullRequestCommentsInput,
   GetPullRequestFilesInput,
   GetPullRequestInput,
+  GitHubAuthenticatedAccount,
   GitHubClient,
   ListPullRequestsInput,
   ListRepositoriesInput
@@ -36,6 +39,7 @@ export {
   GitHubPluginError,
   githubErrorCodes,
   isGitHubPluginError,
+  redactSecrets,
   type GitHubErrorCode
 } from "./client/github-errors.js";
 export type { GitHubRateLimit } from "./client/rate-limit.js";

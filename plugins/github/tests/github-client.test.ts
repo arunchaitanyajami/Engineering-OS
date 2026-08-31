@@ -277,6 +277,35 @@ describe("GitHub client adapter", () => {
     expect(JSON.stringify(client)).not.toContain(testToken);
     expect(client).not.toHaveProperty("token");
   });
+
+  it("verifies authentication against the current GitHub user", async () => {
+    const { fetchMock, calls } = createFetchMock((url) => {
+      expect(url.pathname).toBe("/user");
+      return jsonResponse({
+        login: "ada",
+        id: 42,
+        node_id: "U_kgDO"
+      });
+    });
+
+    await expect(
+      createClient(fetchMock).verifyAuthentication()
+    ).resolves.toEqual({ login: "ada" });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("maps invalid credentials to AUTHENTICATION_FAILED", async () => {
+    await expect(
+      createClient(
+        createFetchMock(() =>
+          jsonResponse({ message: "Bad credentials" }, { status: 401 })
+        ).fetchMock
+      ).verifyAuthentication()
+    ).rejects.toMatchObject({
+      code: "AUTHENTICATION_FAILED",
+      retryable: false
+    });
+  });
 });
 
 describe("GitHub client factory", () => {

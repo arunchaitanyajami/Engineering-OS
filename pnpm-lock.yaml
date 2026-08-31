@@ -126,6 +126,9 @@ importers:
       '@engineering-os/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@engineering-os/github-plugin':
+        specifier: workspace:*
+        version: link:../../plugins/github
       '@engineering-os/logger':
         specifier: workspace:*
         version: link:../../packages/logger
@@ -150,6 +153,9 @@ importers:
       '@engineering-os/security':
         specifier: workspace:*
         version: link:../../packages/security
+      '@engineering-os/source-control-domain':
+        specifier: workspace:*
+        version: link:../../packages/source-control-domain
 
   packages/capability-catalog:
     dependencies:

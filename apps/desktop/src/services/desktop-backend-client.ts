@@ -41,6 +41,30 @@ export interface InstalledPlugin {
   readonly lastError: string | null;
 }
 
+export type GitHubConnectionStatus =
+  "connected" | "disconnected" | "expired" | "error";
+
+export interface EngineeringWorkspace {
+  readonly id: string;
+  readonly name: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface GitHubConnectionRecord {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly pluginId: string;
+  readonly displayName: string;
+  readonly credentialRef: string;
+  readonly status: GitHubConnectionStatus;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly accountLogin: string | null;
+  readonly lastError: string | null;
+  readonly authMethodType: "oauth" | "personal-access-token" | "github-app";
+}
+
 export interface InspectedPluginPackage {
   readonly source: PluginInstallation["source"];
   readonly manifestPath: string;
@@ -314,6 +338,60 @@ export class DesktopBackendClient {
         toolId: options?.toolId
       })}`
     );
+  }
+
+  listWorkspaces(): Promise<{
+    readonly workspaces: readonly EngineeringWorkspace[];
+  }> {
+    return requestDesktopBackend("/workspaces");
+  }
+
+  createWorkspace(name: string): Promise<{
+    readonly workspace: EngineeringWorkspace;
+  }> {
+    return requestDesktopBackend("/workspaces", {
+      method: "POST",
+      body: JSON.stringify({ name })
+    });
+  }
+
+  listGitHubConnections(workspaceId: string): Promise<{
+    readonly connections: readonly GitHubConnectionRecord[];
+  }> {
+    return requestDesktopBackend(
+      `/github/connections${buildQuery({ workspaceId })}`
+    );
+  }
+
+  createGitHubConnection(request: {
+    readonly workspaceId: string;
+    readonly displayName: string;
+    readonly token: string;
+  }): Promise<{ readonly connection: GitHubConnectionRecord }> {
+    return requestDesktopBackend("/github/connections", {
+      method: "POST",
+      body: JSON.stringify(request)
+    });
+  }
+
+  disconnectGitHubConnection(request: {
+    readonly workspaceId: string;
+    readonly connectionId: string;
+  }): Promise<{ readonly connection: GitHubConnectionRecord }> {
+    return requestDesktopBackend("/github/connections/disconnect", {
+      method: "POST",
+      body: JSON.stringify(request)
+    });
+  }
+
+  verifyGitHubConnection(request: {
+    readonly workspaceId: string;
+    readonly connectionId: string;
+  }): Promise<{ readonly connection: GitHubConnectionRecord }> {
+    return requestDesktopBackend("/github/connections/verify", {
+      method: "POST",
+      body: JSON.stringify(request)
+    });
   }
 }
 

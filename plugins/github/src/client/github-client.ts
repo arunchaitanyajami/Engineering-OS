@@ -27,6 +27,7 @@ import {
   type GetPullRequestCommentsInput,
   type GetPullRequestFilesInput,
   type GetPullRequestInput,
+  type GitHubAuthenticatedAccount,
   type GitHubClient,
   type ListPullRequestsInput,
   type ListRepositoriesInput
@@ -381,6 +382,30 @@ export const createGitHubClient = (options: {
       ]);
 
       return [...inlineComments, ...conversationComments];
+    },
+
+    async verifyAuthentication(): Promise<GitHubAuthenticatedAccount> {
+      const result = await requestJson({
+        method: "GET",
+        path: "/user"
+      });
+      const parsed = z
+        .object({
+          login: z.string().trim().min(1).max(128)
+        })
+        .safeParse(result.data);
+
+      if (!parsed.success) {
+        throw new GitHubPluginError({
+          code: "VALIDATION_ERROR",
+          message: "GitHub authenticated account payload was invalid.",
+          retryable: false
+        });
+      }
+
+      return {
+        login: parsed.data.login
+      };
     },
 
     getRateLimit() {

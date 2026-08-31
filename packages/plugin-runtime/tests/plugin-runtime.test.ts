@@ -251,7 +251,9 @@ describe("PluginRuntimeService", () => {
     expect(startedRuntime).toMatchObject({
       pluginId: installedPlugin.pluginId,
       status: "running",
-      healthy: true
+      healthy: true,
+      processId: expect.any(Number),
+      startupDurationMs: expect.any(Number)
     });
     await expect(
       access(

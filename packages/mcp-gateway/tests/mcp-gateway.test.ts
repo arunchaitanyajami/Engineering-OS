@@ -751,6 +751,8 @@ describe("McpGatewayService", () => {
       healthState: "healthy",
       status: "registered",
       discoveryStatus: "discovered",
+      processId: expect.any(Number),
+      startupDurationMs: expect.any(Number),
       catalog: {
         tools: [
           {

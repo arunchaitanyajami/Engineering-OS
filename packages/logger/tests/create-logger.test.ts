@@ -26,5 +26,37 @@ describe("createLogger", () => {
         password: "[REDACTED]"
       }
     });
+    expect(transport.entries[0]?.metadata).toEqual({
+      apiKey: "[REDACTED]",
+      nested: {
+        password: "[REDACTED]"
+      }
+    });
+  });
+
+  it("redacts secrets from messages and serialized errors", () => {
+    const transport = new InMemoryLogTransport();
+    const logger = createLogger({
+      component: "logger-test",
+      transport
+    });
+
+    logger.error(
+      "Request failed: authorization: Bearer message-secret",
+      new Error("authorization: Bearer error-secret"),
+      {
+        authorization: "Bearer metadata-secret"
+      }
+    );
+
+    expect(transport.entries[0]).toMatchObject({
+      message: "Request failed: authorization: Bearer [REDACTED]",
+      metadata: {
+        authorization: "[REDACTED]"
+      },
+      error: {
+        message: "authorization: Bearer [REDACTED]"
+      }
+    });
   });
 });

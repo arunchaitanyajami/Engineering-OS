@@ -36,6 +36,11 @@ import {
   type SecretStore
 } from "@engineering-os/contracts/unstable-runtime";
 import type { Logger } from "@engineering-os/logger";
+import {
+  classifyError,
+  logObservabilityEvent,
+  observabilityEvents
+} from "@engineering-os/observability";
 import type { InstalledPlugin } from "@engineering-os/plugin-registry";
 import { ZodError } from "zod";
 
@@ -76,6 +81,7 @@ export interface McpGatewayCapabilityQuery {
 
 export interface McpGatewayToolExecutionOptions {
   readonly signal?: AbortSignal;
+  readonly executionId?: string;
 }
 
 export interface McpToolExecutionListOptions {
@@ -235,10 +241,12 @@ const allowlistedEnvironmentKeys = [
 
 interface ManagedMcpServerRuntime {
   readonly registrationId: string;
+  readonly serverId: string;
   readonly transport: ManagedStdioClientTransport;
   readonly client: Client;
   readonly logger: Logger;
   expectedExit: boolean;
+  processId?: number;
 }
 
 interface ManagedToolExecution {
@@ -254,6 +262,8 @@ const toServerHealthSnapshot = (
     readonly isRunning?: boolean;
     readonly discoveryStatus?: McpCapabilityDiscoveryStatus;
     readonly catalog?: McpCatalogSnapshot;
+    readonly processId?: number;
+    readonly startupDurationMs?: number;
     readonly lastError?: string;
     readonly restartCount?: number;
   } = {}
@@ -273,6 +283,10 @@ const toServerHealthSnapshot = (
         : "unknown",
     discoveryStatus: options.discoveryStatus ?? "not-started",
     catalog: options.catalog ?? createEmptyCatalog(),
+    ...(options.processId ? { processId: options.processId } : {}),
+    ...(options.startupDurationMs !== undefined
+      ? { startupDurationMs: options.startupDurationMs }
+      : {}),
     restartCount: options.restartCount ?? 0,
     ...(options.lastError ? { lastError: options.lastError } : {})
   });
@@ -430,6 +444,7 @@ export class McpGatewayService {
   private readonly runtimes = new Map<string, ManagedMcpServerRuntime>();
   private readonly lifecycleLocks = new Map<string, Promise<void>>();
   private readonly lastErrors = new Map<string, string>();
+  private readonly startupDurations = new Map<string, number>();
   private readonly catalogs = new Map<string, McpCatalogSnapshot>();
   private readonly discoveryStatuses = new Map<
     string,
@@ -550,6 +565,10 @@ export class McpGatewayService {
     const healthSnapshots = this.listRegisteredServers(options).map(
       (registration) => {
         const lastError = this.lastErrors.get(registration.registrationId);
+        const processId = this.getRuntimeProcessId(registration.registrationId);
+        const startupDurationMs = this.startupDurations.get(
+          registration.registrationId
+        );
 
         return toServerHealthSnapshot(registration, {
           isRunning: this.runtimes.has(registration.registrationId),
@@ -559,6 +578,8 @@ export class McpGatewayService {
           catalog:
             this.catalogs.get(registration.registrationId) ??
             createEmptyCatalog(),
+          ...(processId !== undefined ? { processId } : {}),
+          ...(startupDurationMs !== undefined ? { startupDurationMs } : {}),
           restartCount: this.getRestartCount(registration.registrationId),
           ...(lastError ? { lastError } : {})
         });
@@ -738,15 +759,9 @@ export class McpGatewayService {
     this.toolExecutions.set(managedExecution.executionId, managedExecution);
     this.toolExecutionOrder.push(managedExecution.executionId);
 
-    this.logger.info("Started MCP tool execution handle.", {
-      executionId: managedExecution.executionId,
-      toolId: parsedRequest.toolId,
-      registrationId: resolvedExecution.registration.registrationId,
-      correlationId: parsedRequest.executionContext.correlationId
-    });
-
     managedExecution.completionPromise = this.executeTool(parsedRequest, {
-      signal: managedExecution.controller.signal
+      signal: managedExecution.controller.signal,
+      executionId: managedExecution.executionId
     })
       .then((result) => {
         managedExecution.record = mcpToolExecutionRecordSchema.parse({
@@ -850,20 +865,62 @@ export class McpGatewayService {
     options: McpGatewayToolExecutionOptions = {}
   ): Promise<ToolExecutionResult> {
     const parsedRequest = toolExecutionRequestSchema.parse(request);
+    const executionId = options.executionId ?? randomUUID();
+    const executionLogger = this.logger.child({
+      correlationId: parsedRequest.executionContext.correlationId
+    });
     const resolvedTool = this.resolveToolExecution(parsedRequest);
-    this.validateToolArguments(resolvedTool.tool, parsedRequest.arguments);
+    logObservabilityEvent(
+      executionLogger,
+      "info",
+      observabilityEvents.toolExecutionRequested,
+      {
+        executionId,
+        toolId: parsedRequest.toolId,
+        registrationId: resolvedTool.registration.registrationId,
+        serverId: resolvedTool.registration.serverId,
+        correlationId: parsedRequest.executionContext.correlationId
+      }
+    );
     const timeoutMs = this.getToolExecutionTimeoutMs(resolvedTool.registration);
     const startedAt = Date.now();
 
-    this.logger.info("Executing MCP tool.", {
-      toolId: parsedRequest.toolId,
-      registrationId: resolvedTool.registration.registrationId,
-      serverId: resolvedTool.registration.serverId,
-      actorType: parsedRequest.executionContext.actor.type,
-      actorId: parsedRequest.executionContext.actor.id,
-      correlationId: parsedRequest.executionContext.correlationId,
-      timeoutMs
-    });
+    try {
+      this.validateToolArguments(resolvedTool.tool, parsedRequest.arguments);
+    } catch (error) {
+      logObservabilityEvent(
+        executionLogger,
+        "warn",
+        observabilityEvents.toolExecutionFailed,
+        {
+          executionId,
+          toolId: parsedRequest.toolId,
+          registrationId: resolvedTool.registration.registrationId,
+          serverId: resolvedTool.registration.serverId,
+          correlationId: parsedRequest.executionContext.correlationId,
+          durationMs: Date.now() - startedAt,
+          ...classifyError(error)
+        },
+        error
+      );
+      throw error;
+    }
+
+    logObservabilityEvent(
+      executionLogger,
+      "info",
+      observabilityEvents.toolExecutionStarted,
+      {
+        executionId,
+        toolId: parsedRequest.toolId,
+        registrationId: resolvedTool.registration.registrationId,
+        serverId: resolvedTool.registration.serverId,
+        actorType: parsedRequest.executionContext.actor.type,
+        actorId: parsedRequest.executionContext.actor.id,
+        correlationId: parsedRequest.executionContext.correlationId,
+        timeoutMs
+      }
+    );
 
     try {
       const result = await resolvedTool.runtime.client.callTool(
@@ -897,13 +954,20 @@ export class McpGatewayService {
           : {})
       });
 
-      this.logger.info("Completed MCP tool execution.", {
-        toolId: parsedRequest.toolId,
-        registrationId: resolvedTool.registration.registrationId,
-        correlationId: parsedRequest.executionContext.correlationId,
-        status: normalizedResult.status,
-        durationMs: Date.now() - startedAt
-      });
+      logObservabilityEvent(
+        executionLogger,
+        "info",
+        observabilityEvents.toolExecutionCompleted,
+        {
+          executionId,
+          toolId: parsedRequest.toolId,
+          registrationId: resolvedTool.registration.registrationId,
+          serverId: resolvedTool.registration.serverId,
+          correlationId: parsedRequest.executionContext.correlationId,
+          status: normalizedResult.status,
+          durationMs: Date.now() - startedAt
+        }
+      );
 
       return normalizedResult;
     } catch (error) {
@@ -918,13 +982,20 @@ export class McpGatewayService {
           }
         });
 
-        this.logger.warn("Cancelled MCP tool execution.", {
-          toolId: parsedRequest.toolId,
-          registrationId: resolvedTool.registration.registrationId,
-          correlationId: parsedRequest.executionContext.correlationId,
-          status: cancelledResult.status,
-          durationMs: Date.now() - startedAt
-        });
+        logObservabilityEvent(
+          executionLogger,
+          "warn",
+          observabilityEvents.toolExecutionCancelled,
+          {
+            executionId,
+            toolId: parsedRequest.toolId,
+            registrationId: resolvedTool.registration.registrationId,
+            serverId: resolvedTool.registration.serverId,
+            correlationId: parsedRequest.executionContext.correlationId,
+            status: cancelledResult.status,
+            durationMs: Date.now() - startedAt
+          }
+        );
 
         return cancelledResult;
       }
@@ -943,13 +1014,20 @@ export class McpGatewayService {
           }
         });
 
-        this.logger.warn("Timed out MCP tool execution.", {
-          toolId: parsedRequest.toolId,
-          registrationId: resolvedTool.registration.registrationId,
-          correlationId: parsedRequest.executionContext.correlationId,
-          status: timeoutResult.status,
-          durationMs: Date.now() - startedAt
-        });
+        logObservabilityEvent(
+          executionLogger,
+          "warn",
+          observabilityEvents.toolExecutionFailed,
+          {
+            executionId,
+            toolId: parsedRequest.toolId,
+            registrationId: resolvedTool.registration.registrationId,
+            serverId: resolvedTool.registration.serverId,
+            correlationId: parsedRequest.executionContext.correlationId,
+            status: timeoutResult.status,
+            durationMs: Date.now() - startedAt
+          }
+        );
 
         return timeoutResult;
       }
@@ -967,14 +1045,22 @@ export class McpGatewayService {
         }
       });
 
-      this.logger.warn("Failed MCP tool execution.", {
-        toolId: parsedRequest.toolId,
-        registrationId: resolvedTool.registration.registrationId,
-        correlationId: parsedRequest.executionContext.correlationId,
-        status: failedResult.status,
-        durationMs: Date.now() - startedAt,
-        error: failedResult.error?.message
-      });
+      logObservabilityEvent(
+        executionLogger,
+        "warn",
+        observabilityEvents.toolExecutionFailed,
+        {
+          executionId,
+          toolId: parsedRequest.toolId,
+          registrationId: resolvedTool.registration.registrationId,
+          serverId: resolvedTool.registration.serverId,
+          correlationId: parsedRequest.executionContext.correlationId,
+          status: failedResult.status,
+          durationMs: Date.now() - startedAt,
+          ...classifyError(error),
+          error: failedResult.error?.message
+        }
+      );
 
       return failedResult;
     }
@@ -993,6 +1079,7 @@ export class McpGatewayService {
   ): Promise<McpServerHealthSnapshot> {
     this.throwIfDisposing();
     const registration = this.requireRegisteredServer(registrationId);
+    const startupStartedAt = Date.now();
 
     if (!registration.enabled) {
       throw new McpGatewayError(
@@ -1010,6 +1097,19 @@ export class McpGatewayService {
       );
     }
 
+    logObservabilityEvent(
+      this.logger,
+      "info",
+      observabilityEvents.mcpServerStarting,
+      {
+        registrationId,
+        serverId: registration.serverId,
+        ...(registration.source.type === "plugin"
+          ? { pluginId: registration.source.pluginId }
+          : {})
+      }
+    );
+
     const transport = new ManagedStdioClientTransport({
       command: registration.transport.command,
       args: registration.transport.args,
@@ -1021,6 +1121,7 @@ export class McpGatewayService {
     });
     const runtime: ManagedMcpServerRuntime = {
       registrationId,
+      serverId: registration.serverId,
       transport,
       client: new Client(MCP_GATEWAY_CLIENT_INFO, {
         capabilities: {}
@@ -1043,6 +1144,22 @@ export class McpGatewayService {
         signal: startupDeadline.signal,
         timeout: startupDeadline.remainingMs()
       });
+      if (
+        runtime.transport.pid !== null &&
+        runtime.transport.pid !== undefined
+      ) {
+        runtime.processId = runtime.transport.pid;
+      }
+      logObservabilityEvent(
+        runtime.logger,
+        "info",
+        observabilityEvents.mcpServerConnected,
+        {
+          registrationId,
+          serverId: registration.serverId,
+          processId: runtime.processId
+        }
+      );
       await this.discoverCapabilities(runtime, registration, startupDeadline);
       await this.waitForChildStability(
         runtime,
@@ -1060,13 +1177,28 @@ export class McpGatewayService {
       }
 
       this.lastErrors.delete(registrationId);
+      this.startupDurations.set(registrationId, Date.now() - startupStartedAt);
     } catch (error) {
+      const processId = runtime.processId ?? runtime.transport.pid ?? undefined;
       await this.safeCloseTransport(runtime);
       this.setCatalog(registrationId, createEmptyCatalog());
       this.discoveryStatuses.set(registrationId, "failed");
       this.lastErrors.set(
         registrationId,
         this.toStartupErrorMessage(registrationId, error)
+      );
+      logObservabilityEvent(
+        runtime.logger,
+        "error",
+        observabilityEvents.mcpServerDisconnected,
+        {
+          registrationId,
+          serverId: registration.serverId,
+          ...(processId !== undefined ? { processId } : {}),
+          startupDurationMs: Date.now() - startupStartedAt,
+          ...classifyError(error)
+        },
+        error
       );
       throw new McpGatewayError(
         "MCP_GATEWAY_SERVER_START_FAILED",
@@ -1077,11 +1209,6 @@ export class McpGatewayService {
     } finally {
       startupDeadline.dispose();
     }
-
-    runtime.logger.info("Started MCP stdio server.", {
-      registrationId,
-      pid: runtime.transport.pid
-    });
 
     return this.inspectServerHealth(registrationId);
   }
@@ -1147,12 +1274,16 @@ export class McpGatewayService {
   inspectServerHealth(registrationId: string): McpServerHealthSnapshot {
     const registration = this.requireRegisteredServer(registrationId);
     const lastError = this.lastErrors.get(registrationId);
+    const processId = this.getRuntimeProcessId(registrationId);
+    const startupDurationMs = this.startupDurations.get(registrationId);
 
     return toServerHealthSnapshot(registration, {
       isRunning: this.runtimes.has(registrationId),
       discoveryStatus:
         this.discoveryStatuses.get(registrationId) ?? "not-started",
       catalog: this.catalogs.get(registrationId) ?? createEmptyCatalog(),
+      ...(processId !== undefined ? { processId } : {}),
+      ...(startupDurationMs !== undefined ? { startupDurationMs } : {}),
       restartCount: this.getRestartCount(registrationId),
       ...(lastError ? { lastError } : {})
     });
@@ -1620,7 +1751,7 @@ export class McpGatewayService {
     lines.on("line", (line) => {
       runtime.logger.warn(line, {
         registrationId: runtime.registrationId,
-        pid: runtime.transport.pid,
+        processId: runtime.processId,
         stream: "stderr"
       });
     });
@@ -1634,7 +1765,23 @@ export class McpGatewayService {
       return;
     }
 
+    if (this.runtimes.get(runtime.registrationId) !== runtime) {
+      return;
+    }
+
     this.lastErrors.set(runtime.registrationId, this.toErrorMessage(error));
+    logObservabilityEvent(
+      runtime.logger,
+      "error",
+      observabilityEvents.mcpServerDisconnected,
+      {
+        registrationId: runtime.registrationId,
+        serverId: runtime.serverId,
+        processId: runtime.processId,
+        ...classifyError(error)
+      },
+      error
+    );
   }
 
   private handleChildExit(
@@ -1660,12 +1807,20 @@ export class McpGatewayService {
 
     this.lastErrors.set(runtime.registrationId, errorMessage);
     this.discoveryStatuses.set(runtime.registrationId, "failed");
-    runtime.logger.warn("MCP stdio server exited unexpectedly.", {
-      registrationId: runtime.registrationId,
-      code,
-      signal,
-      restartCount
-    });
+    logObservabilityEvent(
+      runtime.logger,
+      "warn",
+      observabilityEvents.mcpServerCrashed,
+      {
+        registrationId: runtime.registrationId,
+        serverId: runtime.serverId,
+        processId: runtime.processId,
+        code,
+        signal,
+        restartCount,
+        errorCode: "MCP_SERVER_PROCESS_EXITED"
+      }
+    );
 
     if (
       !this.desiredRunningServers.has(runtime.registrationId) ||
@@ -1750,6 +1905,12 @@ export class McpGatewayService {
         ?.filter((timestamp) => now - timestamp <= this.restartWindowMs)
         .length ?? 0
     );
+  }
+
+  private getRuntimeProcessId(registrationId: string): number | undefined {
+    const runtime = this.runtimes.get(registrationId);
+    const processId = runtime?.processId ?? runtime?.transport.pid;
+    return processId && processId > 0 ? processId : undefined;
   }
 
   private markDesiredRunning(registrationId: string): void {
@@ -1859,6 +2020,19 @@ export class McpGatewayService {
 
       this.setCatalog(registration.registrationId, catalog);
       this.discoveryStatuses.set(registration.registrationId, "discovered");
+      logObservabilityEvent(
+        runtime.logger,
+        "info",
+        observabilityEvents.mcpServerCapabilitiesDiscovered,
+        {
+          registrationId: registration.registrationId,
+          serverId: registration.serverId,
+          processId: runtime.processId,
+          toolCount: catalog.tools.length,
+          resourceCount: catalog.resources.length,
+          promptCount: catalog.prompts.length
+        }
+      );
     } catch (error) {
       throw this.normalizeDiscoveryFailure(registration, error);
     }
@@ -2011,8 +2185,19 @@ export class McpGatewayService {
 
   private async stopRuntime(runtime: ManagedMcpServerRuntime): Promise<void> {
     runtime.expectedExit = true;
+    const processId = runtime.processId ?? runtime.transport.pid ?? undefined;
     await this.safeCloseTransport(runtime);
     this.runtimes.delete(runtime.registrationId);
+    logObservabilityEvent(
+      runtime.logger,
+      "info",
+      observabilityEvents.mcpServerDisconnected,
+      {
+        registrationId: runtime.registrationId,
+        serverId: runtime.serverId,
+        ...(processId !== undefined ? { processId } : {})
+      }
+    );
   }
 
   private throwIfDisposing(): void {

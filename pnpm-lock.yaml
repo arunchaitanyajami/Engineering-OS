@@ -131,6 +131,9 @@ importers:
       "@engineering-os/mcp-gateway":
         specifier: workspace:*
         version: link:../../packages/mcp-gateway
+      "@engineering-os/observability":
+        specifier: workspace:*
+        version: link:../../packages/observability
       "@engineering-os/permission-engine":
         specifier: workspace:*
         version: link:../../packages/permission-engine
@@ -228,6 +231,9 @@ importers:
       "@engineering-os/logger":
         specifier: workspace:*
         version: link:../logger
+      "@engineering-os/observability":
+        specifier: workspace:*
+        version: link:../observability
       "@engineering-os/plugin-registry":
         specifier: workspace:*
         version: link:../plugin-registry
@@ -275,6 +281,9 @@ importers:
       "@engineering-os/logger":
         specifier: workspace:*
         version: link:../logger
+      "@engineering-os/observability":
+        specifier: workspace:*
+        version: link:../observability
       "@types/semver":
         specifier: ^7.7.1
         version: 7.7.1
@@ -290,6 +299,9 @@ importers:
       "@engineering-os/logger":
         specifier: workspace:*
         version: link:../logger
+      "@engineering-os/observability":
+        specifier: workspace:*
+        version: link:../observability
       "@engineering-os/plugin-registry":
         specifier: workspace:*
         version: link:../plugin-registry

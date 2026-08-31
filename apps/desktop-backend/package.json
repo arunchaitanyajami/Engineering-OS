@@ -14,6 +14,7 @@
     "@engineering-os/database": "workspace:*",
     "@engineering-os/logger": "workspace:*",
     "@engineering-os/mcp-gateway": "workspace:*",
+    "@engineering-os/observability": "workspace:*",
     "@engineering-os/permission-engine": "workspace:*",
     "@engineering-os/plugin-registry": "workspace:*",
     "@engineering-os/plugin-runtime": "workspace:*",

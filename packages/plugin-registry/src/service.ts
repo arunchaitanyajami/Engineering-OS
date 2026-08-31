@@ -20,6 +20,10 @@ import {
   type PluginManifest
 } from "@engineering-os/contracts";
 import type { Logger } from "@engineering-os/logger";
+import {
+  logObservabilityEvent,
+  observabilityEvents
+} from "@engineering-os/observability";
 import semver from "semver";
 import { z } from "zod";
 
@@ -357,6 +361,25 @@ export class PluginRegistryService {
       this.engineeringOsVersion,
       inspectedPackage.manifest
     );
+    logObservabilityEvent(
+      this.logger,
+      "info",
+      observabilityEvents.pluginDiscovered,
+      {
+        pluginId: inspectedPackage.manifest.id,
+        version: inspectedPackage.manifest.version,
+        sourcePath: localPackagePath
+      }
+    );
+    logObservabilityEvent(
+      this.logger,
+      "info",
+      observabilityEvents.pluginValidated,
+      {
+        pluginId: inspectedPackage.manifest.id,
+        version: inspectedPackage.manifest.version
+      }
+    );
     return inspectedPackage;
   }
 
@@ -423,11 +446,24 @@ export class PluginRegistryService {
       );
     }
 
-    return this.options.repository.updateEnabled(
+    const updatedPlugin = this.options.repository.updateEnabled(
       pluginId,
       enabled,
       new Date().toISOString()
     );
+    logObservabilityEvent(
+      this.logger,
+      "info",
+      enabled
+        ? observabilityEvents.pluginEnabled
+        : observabilityEvents.pluginStopped,
+      {
+        pluginId,
+        version: updatedPlugin.manifest.version,
+        enabled
+      }
+    );
+    return updatedPlugin;
   }
 
   private async runWithInstallationLock<T>(

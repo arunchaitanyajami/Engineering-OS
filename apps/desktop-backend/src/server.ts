@@ -38,6 +38,10 @@ import {
   type LogTransport
 } from "@engineering-os/logger";
 import {
+  logObservabilityEvent,
+  observabilityEvents
+} from "@engineering-os/observability";
+import {
   FileMcpUserRegistrationStore,
   McpUserRegistrationStoreError,
   type McpUserRegistrationStore,
@@ -965,9 +969,32 @@ const assertToolExecutionAllowed = (
   });
 
   if (evaluation.allowed) {
+    if (evaluation.requiredApproval !== "none") {
+      logObservabilityEvent(
+        context.logger,
+        "info",
+        observabilityEvents.toolExecutionApproved,
+        {
+          toolId: toolExecutionRequest.toolId,
+          correlationId: toolExecutionRequest.executionContext.correlationId,
+          requiredApproval: evaluation.requiredApproval
+        }
+      );
+    }
     return;
   }
 
+  logObservabilityEvent(
+    context.logger,
+    "warn",
+    observabilityEvents.toolExecutionFailed,
+    {
+      toolId: toolExecutionRequest.toolId,
+      correlationId: toolExecutionRequest.executionContext.correlationId,
+      outcome: "denied",
+      ...(evaluation.code ? { errorCode: evaluation.code } : {})
+    }
+  );
   throw new BackendPublicError(
     evaluation.code ?? "MCP_TOOL_EXECUTION_DENIED",
     evaluation.message ?? `Tool '${toolExecutionRequest.toolId}' was denied.`,

@@ -9,6 +9,7 @@
   "dependencies": {
     "@engineering-os/contracts": "workspace:*",
     "@engineering-os/logger": "workspace:*",
+    "@engineering-os/observability": "workspace:*",
     "@engineering-os/plugin-registry": "workspace:*"
   },
   "devDependencies": {

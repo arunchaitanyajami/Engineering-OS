@@ -451,6 +451,8 @@ export const mcpServerHealthSnapshotSchema = z
     healthState: mcpServerHealthStateSchema,
     discoveryStatus: mcpCapabilityDiscoveryStatusSchema,
     catalog: mcpCatalogSnapshotSchema,
+    processId: z.number().int().positive().optional(),
+    startupDurationMs: z.number().nonnegative().optional(),
     restartCount: z.number().int().nonnegative().default(0),
     lastError: z.string().min(1).optional()
   })
@@ -584,6 +586,7 @@ export const pluginRuntimeHealthSnapshotSchema = z
     status: pluginRuntimeStatusSchema,
     healthy: z.boolean(),
     processId: z.number().int().positive().optional(),
+    startupDurationMs: z.number().nonnegative().optional(),
     initializedAt: isoTimestampSchema.optional(),
     activatedAt: isoTimestampSchema.optional(),
     restartCount: z.number().int().nonnegative().default(0),

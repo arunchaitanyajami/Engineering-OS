@@ -30,6 +30,11 @@ import {
 } from "@engineering-os/contracts/unstable-runtime";
 import type { Logger } from "@engineering-os/logger";
 import {
+  classifyError,
+  logObservabilityEvent,
+  observabilityEvents
+} from "@engineering-os/observability";
+import {
   calculateManagedInstallationHash,
   type InstalledPlugin
 } from "@engineering-os/plugin-registry";
@@ -175,6 +180,7 @@ export class PluginRuntimeService {
   private readonly logger: Logger;
   private readonly runtimes = new Map<string, ManagedPluginRuntime>();
   private readonly snapshots = new Map<string, PluginRuntimeHealthSnapshot>();
+  private readonly startupDurations = new Map<string, number>();
   private readonly crashHistory = new Map<string, number[]>();
   private readonly lifecycleLocks = new Map<string, Promise<void>>();
   private readonly desiredStates = new Map<string, DesiredRuntimeState>();
@@ -214,6 +220,9 @@ export class PluginRuntimeService {
         pluginId,
         status: "stopped",
         healthy: false,
+        ...(this.startupDurations.has(pluginId)
+          ? { startupDurationMs: this.startupDurations.get(pluginId) }
+          : {}),
         restartCount: this.getRestartCount(pluginId)
       }
     );
@@ -241,6 +250,9 @@ export class PluginRuntimeService {
     const snapshot = pluginRuntimeHealthSnapshotSchema.parse(response.data);
     const mergedSnapshot = {
       ...snapshot,
+      ...(this.startupDurations.has(pluginId)
+        ? { startupDurationMs: this.startupDurations.get(pluginId) }
+        : {}),
       restartCount: this.getRestartCount(pluginId)
     } satisfies PluginRuntimeHealthSnapshot;
 
@@ -390,6 +402,7 @@ export class PluginRuntimeService {
     generation: number
   ): Promise<PluginRuntimeHealthSnapshot> {
     this.throwIfDisposing();
+    const startupStartedAt = Date.now();
 
     if (this.getDesiredState(pluginId) !== "running") {
       return this.getRuntimeHealth(pluginId);
@@ -409,6 +422,15 @@ export class PluginRuntimeService {
 
     const installedPlugin = this.requireRunnableInstalledPlugin(pluginId);
     await this.verifyManagedInstallation(installedPlugin);
+    logObservabilityEvent(
+      this.logger,
+      "info",
+      observabilityEvents.pluginValidated,
+      {
+        pluginId,
+        version: installedPlugin.manifest.version
+      }
+    );
     await this.options.onBeforeRuntimeSpawn?.(installedPlugin);
     this.throwIfDisposing();
 
@@ -458,6 +480,18 @@ export class PluginRuntimeService {
         this.startupTimeoutMs
       );
       runtime.activatedAt = new Date().toISOString();
+      const startupDurationMs = Date.now() - startupStartedAt;
+      this.startupDurations.set(pluginId, startupDurationMs);
+      logObservabilityEvent(
+        runtime.logger,
+        "info",
+        observabilityEvents.pluginStarted,
+        {
+          pluginId,
+          processId: runtime.child.pid,
+          startupDurationMs
+        }
+      );
 
       return this.updateSnapshot(pluginId, {
         status: "running",
@@ -467,16 +501,35 @@ export class PluginRuntimeService {
           ? { initializedAt: runtime.initializedAt }
           : {}),
         ...(runtime.activatedAt ? { activatedAt: runtime.activatedAt } : {}),
+        startupDurationMs,
         restartCount: this.getRestartCount(pluginId)
       });
     } catch (error) {
+      this.startupDurations.set(pluginId, Date.now() - startupStartedAt);
       await this.forceCleanupRuntime(runtime);
       this.updateSnapshot(pluginId, {
         status: "failed",
         healthy: false,
         lastError: this.toErrorMessage(error),
+        ...(this.startupDurations.get(pluginId) !== undefined
+          ? { startupDurationMs: this.startupDurations.get(pluginId) }
+          : {}),
         restartCount: this.getRestartCount(pluginId)
       });
+      logObservabilityEvent(
+        runtime.logger,
+        "error",
+        observabilityEvents.pluginFailed,
+        {
+          pluginId,
+          processId: runtime.child.pid,
+          ...(this.startupDurations.get(pluginId) !== undefined
+            ? { startupDurationMs: this.startupDurations.get(pluginId) }
+            : {}),
+          ...classifyError(error)
+        },
+        error
+      );
       throw error;
     }
   }
@@ -551,14 +604,29 @@ export class PluginRuntimeService {
         status: "failed",
         healthy: false,
         lastError: `Plugin '${runtime.pluginId}' did not exit after forced termination.`,
+        ...(this.startupDurations.get(runtime.pluginId) !== undefined
+          ? { startupDurationMs: this.startupDurations.get(runtime.pluginId) }
+          : {}),
         restartCount: this.getRestartCount(runtime.pluginId)
       });
     }
 
     this.runtimes.delete(runtime.pluginId);
+    logObservabilityEvent(
+      runtime.logger,
+      "info",
+      observabilityEvents.pluginStopped,
+      {
+        pluginId: runtime.pluginId,
+        processId: runtime.child.pid
+      }
+    );
     return this.updateSnapshot(runtime.pluginId, {
       status: "stopped",
       healthy: false,
+      ...(this.startupDurations.get(runtime.pluginId) !== undefined
+        ? { startupDurationMs: this.startupDurations.get(runtime.pluginId) }
+        : {}),
       restartCount: this.getRestartCount(runtime.pluginId)
     });
   }
@@ -705,7 +773,7 @@ export class PluginRuntimeService {
     lines.on("line", (line) => {
       const metadata = {
         pluginId: runtime.pluginId,
-        pid: runtime.child.pid,
+        processId: runtime.child.pid,
         stream
       };
 
@@ -1222,13 +1290,24 @@ export class PluginRuntimeService {
       status: "failed",
       healthy: false,
       lastError: errorMessage,
+      ...(this.startupDurations.get(runtime.pluginId) !== undefined
+        ? { startupDurationMs: this.startupDurations.get(runtime.pluginId) }
+        : {}),
       restartCount
     });
 
-    runtime.logger.error("Plugin runtime terminated unexpectedly.", error, {
-      pluginId: runtime.pluginId,
-      restartCount
-    });
+    logObservabilityEvent(
+      runtime.logger,
+      "error",
+      observabilityEvents.pluginFailed,
+      {
+        pluginId: runtime.pluginId,
+        processId: runtime.child.pid,
+        restartCount,
+        ...classifyError(error)
+      },
+      error
+    );
 
     if (this.getDesiredState(runtime.pluginId) !== "running") {
       return;
@@ -1416,6 +1495,7 @@ export class PluginRuntimeService {
       readonly status: PluginRuntimeStatus;
       readonly healthy: boolean;
       readonly processId?: number;
+      readonly startupDurationMs?: number | undefined;
       readonly initializedAt?: string;
       readonly activatedAt?: string;
       readonly restartCount: number;

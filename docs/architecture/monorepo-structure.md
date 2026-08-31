@@ -30,6 +30,7 @@ packages/
 plugins/
   example-plugin/
   example-mcp-plugin/
+  github/
 
 agents/
   README.md

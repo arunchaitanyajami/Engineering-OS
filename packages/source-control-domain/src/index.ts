@@ -55,6 +55,17 @@ export {
   type PullRequestState
 } from "./pull-request.js";
 export {
+  commitAuthorSchema,
+  commitSchema,
+  fileContentEncodingSchema,
+  fileContentEncodings,
+  fileContentSchema,
+  type Commit,
+  type CommitAuthor,
+  type FileContent,
+  type FileContentEncoding
+} from "./commit.js";
+export {
   repositoryIdentitySchema,
   repositorySchema,
   type Repository,

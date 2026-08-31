@@ -7,9 +7,12 @@ Connector plugins live here.
 - [`example-plugin/`](./example-plugin/README.md) — lifecycle, configuration, secrets, logging, and failure handling
 - [`example-mcp-plugin/`](./example-mcp-plugin/README.md) — safe local MCP tools for gateway validation
 
+## Milestone 3 connectors
+
+- [`github/`](./github/README.md) — GitHub authentication and REST client adapter (MCP tools follow)
+
 ## Planned connector surfaces
 
-- `github`
 - `jira`
 - `confluence`
 - `google-drive`

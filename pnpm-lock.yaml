@@ -357,6 +357,8 @@ importers:
 
   plugins/example-plugin: {}
 
+  plugins/github: {}
+
 packages:
 
   '@adobe/css-tools@4.5.0':

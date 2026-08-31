@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   changedFileSchema,
+  commitSchema,
+  fileContentSchema,
   fileDiffSchema,
   gitReferenceSchema,
   pluginConnectionSchema,
@@ -115,6 +117,40 @@ const createReview = () => ({
     filesAnalyzed: 2,
     filesSkipped: 1
   }
+});
+
+describe("fileContentSchema and commitSchema", () => {
+  it("accepts decoded text file content", () => {
+    expect(
+      fileContentSchema.parse({
+        path: "src/index.ts",
+        sha: gitSha,
+        size: 12,
+        encoding: "utf-8",
+        content: "export {};\n",
+        binary: false
+      }).binary
+    ).toBe(false);
+  });
+
+  it("rejects GitHub commit payload keys leaking through", () => {
+    const result = commitSchema.safeParse({
+      provider: "github",
+      sha: gitSha,
+      message: "Harden checkout totals",
+      author: {
+        name: "Ada",
+        date: "2026-08-31T09:00:00.000Z"
+      },
+      url: "https://github.com/acme/payments/commit/a1b2c3d4e5f6789012345678901234567890abcd",
+      parentShas: ["b2c3d4e5f6789012345678901234567890abcde1"],
+      node_id: "C_kwDO",
+      html_url:
+        "https://github.com/acme/payments/commit/a1b2c3d4e5f6789012345678901234567890abcd"
+    });
+
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("source-control-domain providers", () => {

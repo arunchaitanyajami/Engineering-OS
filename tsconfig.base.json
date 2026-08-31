@@ -33,7 +33,10 @@
       "@engineering-os/security": ["./packages/security/src/index.ts"],
       "@engineering-os/events": ["./packages/events/src/index.ts"],
       "@engineering-os/ui": ["./packages/ui/src/index.tsx"],
-      "@engineering-os/testing": ["./packages/testing/src/index.ts"]
+      "@engineering-os/testing": ["./packages/testing/src/index.ts"],
+      "@engineering-os/source-control-domain": [
+        "./packages/source-control-domain/src/index.ts"
+      ]
     }
   }
 }

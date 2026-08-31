@@ -27,6 +27,7 @@ packages/
   events/
   ui/
   shared/
+  source-control-domain/
   tsconfig/
 ```
 
@@ -42,8 +43,9 @@ The milestone specification uses a few canonical names that differ from package 
 ## Boundaries
 
 - `packages/contracts` is the stable cross-package boundary for plugin manifests, permissions, compatibility, and bundled MCP declarations.
+- `packages/source-control-domain` is the normalized SCM and PR review contract surface. GitHub SDK types must not appear here; the GitHub plugin maps vendor payloads onto these schemas.
 - Runtime, SDK, tool-execution, and RPC contracts remain explicitly unstable behind `@engineering-os/contracts/unstable-runtime`.
-- `packages/plugin-sdk` is the only supported dependency surface for connector plugins.
+- `@engineering-os/plugin-sdk` is the supported runtime/author surface for connector plugins. Plugins may also depend on `@engineering-os/contracts` and `@engineering-os/source-control-domain` for shared types.
 - `packages/core` may depend on contracts and platform services, but must not depend on UI or connector implementations.
 
 ## Plugin dependency rule
@@ -52,5 +54,6 @@ Connector plugins under `plugins/*` may depend only on:
 
 - `@engineering-os/contracts`
 - `@engineering-os/plugin-sdk`
+- `@engineering-os/source-control-domain`
 
 Plugins must not depend on desktop UI internals, database packages, other plugin source trees, or AI provider implementations.

@@ -28,5 +28,6 @@ Each plugin package may depend only on:
 
 - `@engineering-os/contracts`
 - `@engineering-os/plugin-sdk`
+- `@engineering-os/source-control-domain`
 
 See [dependency rules](../docs/architecture/dependency-rules.md) and [plugin development](../docs/plugins/README.md).

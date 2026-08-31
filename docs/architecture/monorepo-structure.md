@@ -25,6 +25,7 @@ packages/
   security/          # secure-storage
   observability/
   testing/           # test-utils
+  source-control-domain/
 
 plugins/
   example-plugin/
@@ -46,8 +47,8 @@ docs/
 ## Boundary rules
 
 - `packages/core` may depend on contracts and platform services.
-- Connector plugins may depend only on `packages/plugin-sdk` and `packages/contracts`.
-- Plugins must not depend on desktop UI internals, database implementation packages, other plugin source trees, or AI provider implementations.
+- Connector plugins may depend only on `packages/plugin-sdk`, `packages/contracts`, and `packages/source-control-domain`.
+- Plugins must not depend on desktop UI internals, database implementation packages, other plugin source trees, AI provider implementations, or SCM SDK types outside the owning plugin.
 - `apps/*` must not import `packages/database` or `packages/security` directly into UI code.
 
 ## Enforcement

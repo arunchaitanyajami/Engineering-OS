@@ -41,6 +41,16 @@ module.exports = {
       }
     },
     {
+      name: "source-control-domain-only-depends-on-shared",
+      severity: "error",
+      from: {
+        path: "^packages/source-control-domain"
+      },
+      to: {
+        path: "^packages/(?!shared|source-control-domain)"
+      }
+    },
+    {
       name: "core-does-not-import-ui",
       severity: "error",
       from: {
@@ -87,7 +97,7 @@ module.exports = {
         path: "^plugins/"
       },
       to: {
-        path: "^packages/(?!contracts|plugin-sdk)"
+        path: "^packages/(?!contracts|plugin-sdk|source-control-domain)"
       }
     }
   ]

@@ -174,6 +174,15 @@ export function SettingsScreen() {
               </Link>
             </div>
             <div className="summary-list__row">
+              <span>GitHub browser</span>
+              <Link
+                className="ui-button ui-button--ghost"
+                to="/integrations/github/browse"
+              >
+                Browse repositories
+              </Link>
+            </div>
+            <div className="summary-list__row">
               <span>Permissions</span>
               <Link className="ui-button ui-button--ghost" to="/permissions">
                 Review grants

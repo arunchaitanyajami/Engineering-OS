@@ -29,11 +29,19 @@ export interface GitHubResolvedAuth {
   readonly token: string;
 }
 
+export const githubMcpWorkspaceIdEnvKey = "ENGINEERING_OS_WORKSPACE_ID";
+
 export const githubPatSecretKey = (input: {
   readonly workspaceId: string;
   readonly connectionId: string;
 }): string =>
   `workspace.${input.workspaceId}.connection.${input.connectionId}.pat`;
+
+export const githubMcpSecretEnvKey = (secretKey: string): string =>
+  `ENGINEERING_OS_SECRET_${secretKey
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toUpperCase()}`;
 
 export const secretKeyForAuthMethod = (method: GitHubAuthMethod): string => {
   switch (method.type) {

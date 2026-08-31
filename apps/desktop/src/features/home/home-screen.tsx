@@ -68,6 +68,12 @@ export function HomeScreen() {
               <Link to="/integrations/github">Connect a workspace account</Link>
             </div>
             <div className="summary-list__row">
+              <span>GitHub browser</span>
+              <Link to="/integrations/github/browse">
+                Browse repositories and pull requests
+              </Link>
+            </div>
+            <div className="summary-list__row">
               <span>MCP gateway</span>
               <Link to="/mcp/servers">Manage MCP servers</Link>
             </div>

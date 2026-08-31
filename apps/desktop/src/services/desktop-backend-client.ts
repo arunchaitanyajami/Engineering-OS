@@ -65,6 +65,50 @@ export interface GitHubConnectionRecord {
   readonly authMethodType: "oauth" | "personal-access-token" | "github-app";
 }
 
+export interface GitHubRepository {
+  readonly provider: "github";
+  readonly owner: string;
+  readonly name: string;
+  readonly fullName: string;
+  readonly defaultBranch: string;
+  readonly private: boolean;
+  readonly url: string;
+  readonly description?: string | null;
+}
+
+export interface GitHubPullRequestAuthor {
+  readonly id: string;
+  readonly username: string;
+  readonly avatarUrl?: string;
+}
+
+export interface GitHubPullRequest {
+  readonly provider: "github";
+  readonly repository: {
+    readonly owner: string;
+    readonly name: string;
+  };
+  readonly number: number;
+  readonly title: string;
+  readonly description: string | null;
+  readonly state: "open" | "closed" | "merged";
+  readonly author: GitHubPullRequestAuthor;
+  readonly base: {
+    readonly ref: string;
+    readonly sha: string;
+  };
+  readonly head: {
+    readonly ref: string;
+    readonly sha: string;
+  };
+  readonly additions: number;
+  readonly deletions: number;
+  readonly changedFiles: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly url: string;
+}
+
 export interface InspectedPluginPackage {
   readonly source: PluginInstallation["source"];
   readonly manifestPath: string;
@@ -392,6 +436,54 @@ export class DesktopBackendClient {
       method: "POST",
       body: JSON.stringify(request)
     });
+  }
+
+  listGitHubRepositories(request: {
+    readonly workspaceId: string;
+    readonly connectionId: string;
+  }): Promise<{ readonly repositories: readonly GitHubRepository[] }> {
+    return requestDesktopBackend(
+      `/github/repositories${buildQuery({
+        workspaceId: request.workspaceId,
+        connectionId: request.connectionId
+      })}`
+    );
+  }
+
+  listGitHubPullRequests(request: {
+    readonly workspaceId: string;
+    readonly connectionId: string;
+    readonly owner: string;
+    readonly repository: string;
+    readonly state?: "open" | "closed" | "all";
+  }): Promise<{ readonly pullRequests: readonly GitHubPullRequest[] }> {
+    return requestDesktopBackend(
+      `/github/pull-requests${buildQuery({
+        workspaceId: request.workspaceId,
+        connectionId: request.connectionId,
+        owner: request.owner,
+        repository: request.repository,
+        state: request.state
+      })}`
+    );
+  }
+
+  getGitHubPullRequest(request: {
+    readonly workspaceId: string;
+    readonly connectionId: string;
+    readonly owner: string;
+    readonly repository: string;
+    readonly pullRequestNumber: number;
+  }): Promise<{ readonly pullRequest: GitHubPullRequest }> {
+    return requestDesktopBackend(
+      `/github/pull-request${buildQuery({
+        workspaceId: request.workspaceId,
+        connectionId: request.connectionId,
+        owner: request.owner,
+        repository: request.repository,
+        pullRequestNumber: String(request.pullRequestNumber)
+      })}`
+    );
   }
 }
 

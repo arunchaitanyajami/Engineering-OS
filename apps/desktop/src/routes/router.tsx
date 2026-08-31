@@ -74,6 +74,11 @@ const GitHubConnectionScreen = lazy(() =>
     })
   )
 );
+const GitHubBrowserScreen = lazy(() =>
+  import("../features/github-browser/github-browser-screen").then((module) => ({
+    default: module.GitHubBrowserScreen
+  }))
+);
 
 const withSuspense = (element: ReactNode) => (
   <Suspense
@@ -138,6 +143,10 @@ const router = createBrowserRouter([
       {
         path: "integrations/github",
         element: withSuspense(<GitHubConnectionScreen />)
+      },
+      {
+        path: "integrations/github/browse",
+        element: withSuspense(<GitHubBrowserScreen />)
       },
       {
         path: "mcp/servers",

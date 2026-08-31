@@ -6,7 +6,7 @@ GitHub REST knowledge stays in this package. Application services, agents, and
 the desktop UI must consume normalized `@engineering-os/source-control-domain`
 types through the MCP gateway once those tools land.
 
-## Current scope (M3.4)
+## Current scope (M3.5)
 
 - personal access token authentication, with OAuth and GitHub App method shapes reserved
 - credential resolution through plugin secret references (never raw tokens in SQLite)
@@ -15,6 +15,7 @@ types through the MCP gateway once those tools land.
 - mapping from GitHub REST payloads onto domain contracts
 - read-only MCP tools with workspace and connection isolation
 - workspace-scoped connection records and desktop connection UI
+- repository and pull request browser through MCP only
 
 Publishing remains a later Milestone 3 phase.
 

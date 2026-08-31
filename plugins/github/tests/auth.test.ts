@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { createGitHubCredentialResolver } from "../src/auth/credential-resolver.js";
-import { githubPatSecretKey } from "../src/auth/github-auth.js";
+import {
+  githubMcpSecretEnvKey,
+  githubPatSecretKey
+} from "../src/auth/github-auth.js";
 import { GitHubPluginError } from "../src/client/github-errors.js";
 import { createMemorySecrets, testToken } from "./helpers.js";
 
@@ -81,5 +84,13 @@ describe("GitHub credential resolver", () => {
         connectionId: "connection-1"
       })
     ).toBe("workspace.workspace-a.connection.connection-1.pat");
+  });
+
+  it("maps secret keys onto MCP process environment names", () => {
+    expect(
+      githubMcpSecretEnvKey("workspace.workspace-a.connection.connection-1.pat")
+    ).toBe(
+      "ENGINEERING_OS_SECRET_WORKSPACE_WORKSPACE_A_CONNECTION_CONNECTION_1_PAT"
+    );
   });
 });

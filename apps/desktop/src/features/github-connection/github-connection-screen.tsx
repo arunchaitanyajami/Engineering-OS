@@ -261,6 +261,14 @@ export function GitHubConnectionScreen() {
         eyebrow="Integrations"
         title="GitHub"
         description="Enable the GitHub plugin and assign a workspace-scoped connection. Credentials stay in the local secret store."
+        actions={
+          <Link
+            className="ui-button ui-button--ghost"
+            to="/integrations/github/browse"
+          >
+            Browse repositories
+          </Link>
+        }
       />
 
       {actionError ? <p className="ui-error-text">{actionError}</p> : null}
@@ -542,6 +550,14 @@ function ConnectionCard({
         <p className="ui-error-text">{connection.lastError}</p>
       ) : null}
       <div className="action-row">
+        {connection.status === "connected" ? (
+          <Link
+            className="ui-button ui-button--ghost"
+            to={`/integrations/github/browse?workspaceId=${encodeURIComponent(connection.workspaceId)}&connectionId=${encodeURIComponent(connection.id)}`}
+          >
+            Browse repositories
+          </Link>
+        ) : null}
         {connection.status !== "disconnected" ? (
           <Button
             className="ui-button--ghost"

@@ -1,4 +1,8 @@
-import { githubPatSecretKey } from "../auth/github-auth.js";
+import {
+  githubMcpSecretEnvKey,
+  githubMcpWorkspaceIdEnvKey,
+  githubPatSecretKey
+} from "../auth/github-auth.js";
 import { createGitHubClientFactory } from "../client/github-client-factory.js";
 import {
   githubPluginCapabilities,
@@ -53,17 +57,13 @@ const readLine = async (): Promise<string | null> => {
 
 const createEnvSecretStore = () => ({
   async get(key: string): Promise<string | null> {
-    const envKey = `ENGINEERING_OS_SECRET_${key
-      .replace(/[^A-Za-z0-9]+/g, "_")
-      .replace(/^_+|_+$/g, "")
-      .toUpperCase()}`;
-    const value = process.env[envKey] ?? process.env[key];
+    const value = process.env[githubMcpSecretEnvKey(key)] ?? process.env[key];
     return value && value.length > 0 ? value : null;
   }
 });
 
 const start = async () => {
-  const workspaceId = process.env.ENGINEERING_OS_WORKSPACE_ID?.trim();
+  const workspaceId = process.env[githubMcpWorkspaceIdEnvKey]?.trim();
 
   if (!workspaceId) {
     process.stderr.write(

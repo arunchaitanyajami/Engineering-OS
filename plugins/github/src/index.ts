@@ -4,6 +4,8 @@ export {
 } from "./auth/credential-resolver.js";
 export {
   githubAuthMethodSchema,
+  githubMcpSecretEnvKey,
+  githubMcpWorkspaceIdEnvKey,
   githubPatSecretKey,
   type GitHubAuthMethod,
   type GitHubResolvedAuth

@@ -13,6 +13,7 @@ apps/
         mcp/
         permissions/
         github-connection/
+        github-browser/
 
 packages/
   core/

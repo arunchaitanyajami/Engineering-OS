@@ -84,6 +84,12 @@ import type {
 import { z } from "zod";
 
 import {
+  GitHubBrowseService,
+  getGitHubPullRequestRequestSchema,
+  listGitHubPullRequestsRequestSchema,
+  listGitHubRepositoriesRequestSchema
+} from "./github-browse-service.js";
+import {
   GitHubConnectionService,
   createGitHubConnectionRequestSchema,
   githubConnectionReferenceRequestSchema
@@ -176,6 +182,7 @@ export interface BackendContext {
   readonly toolSafety: ToolSafetyService;
   readonly workspaceService: WorkspaceService;
   readonly githubConnectionService: GitHubConnectionService;
+  readonly githubBrowseService: GitHubBrowseService;
   readonly logger: ReturnType<typeof createLogger>;
   flushLogs(): Promise<void>;
 }
@@ -999,6 +1006,12 @@ export const createBackendContext = async (
     auditService,
     workspaces: workspaceService
   });
+  const githubBrowseService = new GitHubBrowseService({
+    connections: githubConnectionService,
+    pluginRegistry,
+    mcpGateway,
+    permissionEngine
+  });
   database.setMetadata("database_status", "ready");
 
   return {
@@ -1021,6 +1034,7 @@ export const createBackendContext = async (
     toolSafety,
     workspaceService,
     githubConnectionService,
+    githubBrowseService,
     logger,
     flushLogs: () => fileLogTransport.flush()
   };
@@ -1104,6 +1118,31 @@ const finalizeSuccessfulToolExecution = (
       "tool.execute"
     );
   }
+};
+
+const readGitHubBrowseQuery = <T>(
+  searchParams: URLSearchParams,
+  schema: z.ZodType<T>,
+  fields: readonly string[]
+): T => {
+  const parsed = schema.safeParse(
+    Object.fromEntries(
+      fields.flatMap((field) => {
+        const value = searchParams.get(field)?.trim();
+        return value ? [[field, value]] : [];
+      })
+    )
+  );
+
+  if (!parsed.success) {
+    throw new BackendPublicError(
+      "GITHUB_BROWSE_REQUEST_INVALID",
+      "GitHub browse request is invalid.",
+      400
+    );
+  }
+
+  return parsed.data;
 };
 
 export const createDesktopBackendHandler =
@@ -1647,6 +1686,72 @@ export const createDesktopBackendHandler =
         writeJson(response, {
           connection: await context.githubConnectionService.verifyConnection(
             verifyRequest,
+            requestAbortSignal
+          )
+        });
+        return;
+      }
+
+      if (
+        request.method === "GET" &&
+        requestUrl.pathname === "/github/repositories"
+      ) {
+        const browseRequest = readGitHubBrowseQuery(
+          requestUrl.searchParams,
+          listGitHubRepositoriesRequestSchema,
+          ["workspaceId", "connectionId"]
+        );
+        const requestAbortSignal = createRequestAbortSignal(request, response);
+
+        writeJson(response, {
+          repositories: await context.githubBrowseService.listRepositories(
+            browseRequest,
+            requestAbortSignal
+          )
+        });
+        return;
+      }
+
+      if (
+        request.method === "GET" &&
+        requestUrl.pathname === "/github/pull-requests"
+      ) {
+        const browseRequest = readGitHubBrowseQuery(
+          requestUrl.searchParams,
+          listGitHubPullRequestsRequestSchema,
+          ["workspaceId", "connectionId", "owner", "repository", "state"]
+        );
+        const requestAbortSignal = createRequestAbortSignal(request, response);
+
+        writeJson(response, {
+          pullRequests: await context.githubBrowseService.listPullRequests(
+            browseRequest,
+            requestAbortSignal
+          )
+        });
+        return;
+      }
+
+      if (
+        request.method === "GET" &&
+        requestUrl.pathname === "/github/pull-request"
+      ) {
+        const browseRequest = readGitHubBrowseQuery(
+          requestUrl.searchParams,
+          getGitHubPullRequestRequestSchema,
+          [
+            "workspaceId",
+            "connectionId",
+            "owner",
+            "repository",
+            "pullRequestNumber"
+          ]
+        );
+        const requestAbortSignal = createRequestAbortSignal(request, response);
+
+        writeJson(response, {
+          pullRequest: await context.githubBrowseService.getPullRequest(
+            browseRequest,
             requestAbortSignal
           )
         });

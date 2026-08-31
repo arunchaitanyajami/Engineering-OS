@@ -78,7 +78,7 @@ export const appRouteDefinitions: readonly AppRouteDefinition[] = [
     label: "GitHub",
     title: "GitHub",
     description:
-      "Enable the GitHub plugin and assign a workspace-scoped connection.",
+      "Enable the GitHub plugin, assign a workspace connection, and browse repositories and pull requests.",
     icon: createLetterIcon("G"),
     navigationGroup: "platform",
     enabled: true

@@ -90,8 +90,21 @@ export function DesktopShellLayout() {
         id: "navigate.github",
         title: "Open GitHub",
         category: "Navigation",
-        keywords: ["github", "connection", "integration"],
+        keywords: [
+          "github",
+          "connection",
+          "integration",
+          "repository",
+          "pull request"
+        ],
         execute: () => navigate("/integrations/github")
+      },
+      {
+        id: "navigate.github-browser",
+        title: "Browse GitHub repositories",
+        category: "Navigation",
+        keywords: ["github", "repository", "pull request", "browser"],
+        execute: () => navigate("/integrations/github/browse")
       },
       {
         id: "navigate.settings",

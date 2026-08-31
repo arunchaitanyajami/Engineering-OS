@@ -1919,6 +1919,143 @@ describe("McpGatewayService", () => {
     );
   });
 
+  it("injects transport environment overlays when starting stdio MCP servers", async () => {
+    const { fixturesDirectory, pluginRegistry, gateway } =
+      await createGateway();
+    const { packageDirectory } = await createPluginPackage(fixturesDirectory, {
+      serverScript: `
+        let buffer = "";
+
+        const writeMessage = (message) => {
+          process.stdout.write(JSON.stringify(message) + "\\n");
+        };
+
+        const handleMessage = (message) => {
+          if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") {
+            return;
+          }
+
+          switch (message.method) {
+            case "initialize":
+              writeMessage({
+                jsonrpc: "2.0",
+                id: message.id,
+                result: {
+                  protocolVersion: "2025-06-18",
+                  capabilities: { tools: {} },
+                  serverInfo: { name: "fixture-mcp-server", version: "1.0.0" }
+                }
+              });
+              return;
+            case "notifications/initialized":
+              return;
+            case "tools/list":
+              writeMessage({
+                jsonrpc: "2.0",
+                id: message.id,
+                result: {
+                  tools: [
+                    {
+                      name: "read_workspace",
+                      description: "Reads files from the workspace.",
+                      inputSchema: {
+                        type: "object",
+                        properties: {},
+                        additionalProperties: false
+                      },
+                      annotations: { readOnlyHint: true }
+                    }
+                  ]
+                }
+              });
+              return;
+            case "tools/call":
+              writeMessage({
+                jsonrpc: "2.0",
+                id: message.id,
+                result: {
+                  content: [
+                    {
+                      type: "text",
+                      text: process.env.ENGINEERING_OS_WORKSPACE_ID ?? ""
+                    }
+                  ],
+                  structuredContent: {
+                    workspaceId: process.env.ENGINEERING_OS_WORKSPACE_ID ?? ""
+                  },
+                  isError: false
+                }
+              });
+              return;
+            default:
+              if (message.id !== undefined) {
+                writeMessage({
+                  jsonrpc: "2.0",
+                  id: message.id,
+                  error: { code: -32601, message: "Method not found" }
+                });
+              }
+          }
+        };
+
+        process.stdin.on("data", (chunk) => {
+          buffer += chunk.toString("utf8");
+
+          while (true) {
+            const newlineIndex = buffer.indexOf("\\n");
+
+            if (newlineIndex === -1) {
+              break;
+            }
+
+            const line = buffer.slice(0, newlineIndex).replace(/\\r$/, "");
+            buffer = buffer.slice(newlineIndex + 1);
+
+            if (!line.trim()) {
+              continue;
+            }
+
+            handleMessage(JSON.parse(line));
+          }
+        });
+
+        process.on("SIGTERM", () => {
+          process.exit(0);
+        });
+      `
+    });
+    const installedPlugin =
+      await pluginRegistry.registerLocalPluginPackage(packageDirectory);
+    const registrationId = `${installedPlugin.pluginId}:filesystem`;
+
+    pluginRegistry.enableInstalledPlugin(installedPlugin.pluginId);
+    gateway.setTransportEnvironmentOverlay(registrationId, {
+      ENGINEERING_OS_WORKSPACE_ID: "workspace-a"
+    });
+    await gateway.startServer(registrationId);
+
+    await expect(
+      gateway.executeTool({
+        toolId: "com.engineering-os.mcp-plugin.filesystem.tool.read_workspace",
+        arguments: {},
+        executionContext: {
+          actor: { type: "user" },
+          correlationId: "corr-overlay",
+          approvalMode: "none"
+        }
+      })
+    ).resolves.toMatchObject({
+      status: "success",
+      metadata: {
+        structuredContent: {
+          workspaceId: "workspace-a"
+        }
+      }
+    });
+
+    await gateway.stopServer(registrationId);
+  });
+
   it("rejects stdio servers that exit before startup stabilizes", async () => {
     const { fixturesDirectory, pluginRegistry, gateway } =
       await createGateway();

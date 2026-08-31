@@ -10,6 +10,7 @@ Internal reference plugin for Milestone 2 MCP gateway validation.
 | `get_current_workspace_info` | Returns safe process metadata (`cwd`, Node version, platform) |
 | `list_sample_resources`      | Lists bundled sample resources                                |
 | `read_sample_resource`       | Reads a sample resource by URI                                |
+| `crash_server`               | Simulates one MCP process crash, then reports recovery        |
 
 ## Sample resources
 
@@ -24,6 +25,10 @@ This plugin intentionally excludes GitHub or other Milestone 3 connectors.
 - `dist/mcp/server.js` — stdio MCP server started by the gateway
 
 The backend does not spawn MCP processes directly. After enabling the plugin, start the MCP registration from the MCP Servers screen or lifecycle API.
+
+`crash_server` is a deliberate exit-demo fixture. It exits once, allowing the
+gateway to demonstrate crash isolation, restart counting, structured
+diagnostics, and recovery without terminating the desktop backend.
 
 ## Install locally
 

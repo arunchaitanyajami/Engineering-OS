@@ -554,8 +554,10 @@ describe("desktop backend server", () => {
       scope: "desktop-shell",
       message: "Desktop backend integration test.",
       context: {
-        area: "native-integration"
-      }
+        area: "native-integration",
+        pluginId: "com.engineering-os.log-test"
+      },
+      correlationId: "log-correlation"
     };
 
     const response = await fetch(`${runtime.baseUrl}/logs`, {
@@ -571,6 +573,24 @@ describe("desktop backend server", () => {
     await expect(
       readFile(runtime.context.logFilePath, "utf8")
     ).resolves.toContain('"scope":"desktop-shell"');
+
+    const logsResponse = await fetch(
+      `${runtime.baseUrl}/logs?pluginId=com.engineering-os.log-test`,
+      {
+        headers: authenticatedHeaders()
+      }
+    );
+
+    expect(logsResponse.status).toBe(200);
+    await expect(logsResponse.json()).resolves.toMatchObject({
+      logs: [
+        {
+          scope: "desktop-shell",
+          message: "Desktop backend integration test.",
+          correlationId: "log-correlation"
+        }
+      ]
+    });
   });
 
   it("requires authentication for desktop backend routes", async () => {

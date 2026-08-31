@@ -207,7 +207,8 @@ describe("Reference plugins", () => {
       "echo",
       "get_current_workspace_info",
       "list_sample_resources",
-      "read_sample_resource"
+      "read_sample_resource",
+      "crash_server"
     ]);
     expect(capabilities.resources.length).toBeGreaterThan(0);
 

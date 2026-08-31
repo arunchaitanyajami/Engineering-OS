@@ -456,6 +456,59 @@ const appendJsonLine = async (
   await writeFile(path, serialized, { encoding: "utf8", flag: "a" });
 };
 
+const persistedLogEntrySchema = z
+  .object({
+    timestamp: z.string().min(1),
+    level: z.enum(["trace", "debug", "info", "warn", "error"]),
+    scope: z.string().min(1),
+    message: z.string().min(1),
+    context: z.record(z.unknown()).optional(),
+    correlationId: z.string().min(1).optional()
+  })
+  .strict();
+
+const readPersistedLogEntries = async (
+  path: string,
+  options: {
+    readonly limit: number;
+    readonly pluginId?: string;
+    readonly registrationId?: string;
+  }
+): Promise<readonly PersistedLogEntry[]> => {
+  let serialized: string;
+
+  try {
+    serialized = await readFile(path, "utf8");
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return [];
+    }
+    throw error;
+  }
+
+  const entries = serialized
+    .split("\n")
+    .reverse()
+    .map((line) => {
+      try {
+        return persistedLogEntrySchema.parse(JSON.parse(line));
+      } catch {
+        return null;
+      }
+    })
+    .filter((entry): entry is PersistedLogEntry => entry !== null)
+    .filter((entry) => {
+      const context = entry.context;
+      return (
+        (!options.pluginId || context?.pluginId === options.pluginId) &&
+        (!options.registrationId ||
+          context?.registrationId === options.registrationId)
+      );
+    });
+
+  return entries.slice(0, options.limit);
+};
+
 const createLocalServicesStatus = (
   health: ApplicationDatabaseHealth,
   context: Pick<
@@ -1289,6 +1342,27 @@ export const createDesktopBackendHandler =
           prompts: context.mcpGateway.listPrompts({
             ...(pluginId ? { pluginId } : {}),
             ...(serverId ? { serverId } : {})
+          })
+        });
+        return;
+      }
+
+      if (request.method === "GET" && requestUrl.pathname === "/logs") {
+        const requestedLimit = Number(requestUrl.searchParams.get("limit"));
+        const limit =
+          Number.isInteger(requestedLimit) && requestedLimit > 0
+            ? Math.min(requestedLimit, 200)
+            : 100;
+        const pluginId = requestUrl.searchParams.get("pluginId")?.trim();
+        const registrationId = requestUrl.searchParams
+          .get("registrationId")
+          ?.trim();
+
+        writeJson(response, {
+          logs: await readPersistedLogEntries(context.logFilePath, {
+            limit,
+            ...(pluginId ? { pluginId } : {}),
+            ...(registrationId ? { registrationId } : {})
           })
         });
         return;

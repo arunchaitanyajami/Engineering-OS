@@ -1,4 +1,5 @@
 import type { PluginManifest } from "@engineering-os/contracts";
+import type { PersistedLogEntry } from "@engineering-os/platform";
 import type {
   AuditEvent,
   GrantPluginPermissionsRequest,
@@ -186,6 +187,20 @@ export class DesktopBackendClient {
         limit: options?.limit?.toString(),
         pluginId: options?.pluginId,
         action: options?.action
+      })}`
+    );
+  }
+
+  listLogs(options?: {
+    readonly limit?: number;
+    readonly pluginId?: string;
+    readonly registrationId?: string;
+  }): Promise<{ readonly logs: readonly PersistedLogEntry[] }> {
+    return requestDesktopBackend(
+      `/logs${buildQuery({
+        limit: options?.limit?.toString(),
+        pluginId: options?.pluginId,
+        registrationId: options?.registrationId
       })}`
     );
   }

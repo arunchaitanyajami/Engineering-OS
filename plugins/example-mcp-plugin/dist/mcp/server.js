@@ -1,3 +1,5 @@
+import { existsSync, writeFileSync } from "node:fs";
+
 const SAMPLE_RESOURCES = [
   {
     uri: "sample://docs/getting-started",
@@ -79,10 +81,24 @@ const TOOLS = [
     annotations: {
       readOnlyHint: true
     }
+  },
+  {
+    name: "crash_server",
+    title: "Crash Server",
+    description: "Simulates a one-time MCP process crash for diagnostics.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    },
+    annotations: {
+      destructiveHint: true
+    }
   }
 ];
 
 let buffer = "";
+const crashMarkerPath = ".example-mcp-plugin-crashed";
 
 const writeMessage = (message) => {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -220,6 +236,26 @@ const handleToolCall = (message) => {
             mimeType: resource.mimeType,
             text: resource.text
           }
+        }
+      });
+      return;
+    }
+    case "crash_server": {
+      if (!existsSync(crashMarkerPath)) {
+        writeFileSync(crashMarkerPath, "crashed\n", "utf8");
+        process.exit(17);
+      }
+
+      writeMessage({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: "MCP server recovered after the simulated crash."
+            }
+          ]
         }
       });
       return;

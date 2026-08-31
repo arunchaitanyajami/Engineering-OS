@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 
 import {
   Badge,
@@ -25,6 +25,7 @@ type PluginDetailTab =
 export function PluginDetailScreen() {
   const { pluginId = "" } = useParams();
   const decodedPluginId = decodeURIComponent(pluginId);
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<PluginDetailTab>("overview");
   const [actionError, setActionError] = useState<string | null>(null);
   const [configurationKey, setConfigurationKey] = useState("");
@@ -34,22 +35,32 @@ export function PluginDetailScreen() {
   const [isBusy, setIsBusy] = useState(false);
 
   const loadDetail = useCallback(async () => {
-    const [pluginResponse, runtimeResponse, reviewResponse, auditResponse] =
-      await Promise.all([
-        desktopBackendClient.getPlugin(decodedPluginId),
-        desktopBackendClient.getPluginRuntime(decodedPluginId),
-        desktopBackendClient.getPermissionReview(decodedPluginId),
-        desktopBackendClient.listAuditEvents({
-          pluginId: decodedPluginId,
-          limit: 50
-        })
-      ]);
+    const [
+      pluginResponse,
+      runtimeResponse,
+      reviewResponse,
+      auditResponse,
+      logsResponse
+    ] = await Promise.all([
+      desktopBackendClient.getPlugin(decodedPluginId),
+      desktopBackendClient.getPluginRuntime(decodedPluginId),
+      desktopBackendClient.getPermissionReview(decodedPluginId),
+      desktopBackendClient.listAuditEvents({
+        pluginId: decodedPluginId,
+        limit: 50
+      }),
+      desktopBackendClient.listLogs({
+        pluginId: decodedPluginId,
+        limit: 50
+      })
+    ]);
 
     return {
       plugin: pluginResponse.plugin,
       runtime: runtimeResponse.runtime,
       review: reviewResponse.review,
-      auditEvents: auditResponse.events
+      auditEvents: auditResponse.events,
+      logs: logsResponse.logs
     };
   }, [decodedPluginId]);
 
@@ -94,7 +105,7 @@ export function PluginDetailScreen() {
     );
   }
 
-  const { plugin, runtime, review, auditEvents } = data;
+  const { plugin, runtime, review, auditEvents, logs } = data;
 
   const runAction = async (action: () => Promise<unknown>) => {
     setIsBusy(true);
@@ -158,6 +169,24 @@ export function PluginDetailScreen() {
         readError instanceof Error
           ? readError.message
           : "Configuration read failed."
+      );
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const uninstallPlugin = async () => {
+    setIsBusy(true);
+    setActionError(null);
+
+    try {
+      await desktopBackendClient.unregisterPlugin(decodedPluginId);
+      navigate("/plugins");
+    } catch (uninstallError) {
+      setActionError(
+        uninstallError instanceof Error
+          ? uninstallError.message
+          : "Plugin uninstall failed."
       );
     } finally {
       setIsBusy(false);
@@ -271,13 +300,9 @@ export function PluginDetailScreen() {
               <Button
                 className="ui-button--ghost"
                 disabled={isBusy}
-                onClick={() =>
-                  void runAction(() =>
-                    desktopBackendClient.unregisterPlugin(decodedPluginId)
-                  )
-                }
+                onClick={() => void uninstallPlugin()}
               >
-                Unregister
+                Uninstall
               </Button>
             </div>
           </PanelCard>
@@ -370,25 +395,54 @@ export function PluginDetailScreen() {
       ) : null}
 
       {activeTab === "logs" ? (
-        <PanelCard eyebrow="Audit" title="Recent plugin events">
-          {auditEvents.length === 0 ? (
-            <EmptyState
-              title="No audit events"
-              description="Sensitive plugin operations will appear here as audit metadata."
-            />
-          ) : (
-            <div className="stack-list">
-              {auditEvents.map((event) => (
-                <div className="list-note" key={event.id}>
-                  <strong>{event.action}</strong>
-                  <span className="ui-muted">
-                    {event.outcome} · {event.timestamp}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </PanelCard>
+        <div className="content-grid">
+          <PanelCard eyebrow="Structured logs" title="Recent runtime events">
+            {logs.length === 0 ? (
+              <EmptyState
+                title="No structured logs"
+                description="Plugin and MCP lifecycle events will appear here."
+              />
+            ) : (
+              <div className="stack-list">
+                {logs.map((entry, index) => (
+                  <div
+                    className="list-note"
+                    key={`${entry.timestamp}-${index}`}
+                  >
+                    <strong>{entry.message}</strong>
+                    <span className="ui-muted">
+                      {entry.level} · {entry.timestamp}
+                    </span>
+                    {entry.context ? (
+                      <pre className="code-block">
+                        {formatJson(entry.context)}
+                      </pre>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            )}
+          </PanelCard>
+          <PanelCard eyebrow="Audit" title="Recent plugin events">
+            {auditEvents.length === 0 ? (
+              <EmptyState
+                title="No audit events"
+                description="Sensitive plugin operations will appear here as audit metadata."
+              />
+            ) : (
+              <div className="stack-list">
+                {auditEvents.map((event) => (
+                  <div className="list-note" key={event.id}>
+                    <strong>{event.action}</strong>
+                    <span className="ui-muted">
+                      {event.outcome} · {event.timestamp}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </PanelCard>
+        </div>
       ) : null}
     </div>
   );
